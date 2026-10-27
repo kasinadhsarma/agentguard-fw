@@ -228,3 +228,9 @@ How to read these numbers:
 - `docs/architecture.md`: the architecture diagrams as Mermaid.
 - `docs/diagrams/*.mmd`: the Mermaid sources.
 - `CHANGELOG.md`: release notes for v0.1 to v0.4.
+
+## Project policies
+
+- `LICENSE`: MIT.
+- `SECURITY.md`: how to report a vulnerability, and what counts as one.
+- `CONTRIBUTING.md`: setup, workflow and how to add attack samples.

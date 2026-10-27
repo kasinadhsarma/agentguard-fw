@@ -18,6 +18,12 @@ matters:
 Neither mode detects truncation of the tail by itself. Store the value of
 `head` somewhere else (a ticket, another system) and pass it to verify()
 as expected_head to catch that.
+
+Several worker processes may append to the same file. Each append takes an
+exclusive file lock (flock), re-reads the last record to learn the real
+chain tip, and writes the next record, so the chain stays unbroken. This
+needs a local filesystem or a volume with working flock; it is not
+reliable over NFS. Without fcntl (Windows) only threads are serialized.
 """
 
 from __future__ import annotations
@@ -32,6 +38,11 @@ from pathlib import Path
 from typing import Any
 
 from .models import AuditEvent
+
+try:  # POSIX only
+    import fcntl
+except ImportError:  # pragma: no cover
+    fcntl = None  # type: ignore[assignment]
 
 
 GENESIS_HASH = '0' * 64
@@ -73,19 +84,16 @@ class AuditStore:
         self.key = key.encode() if isinstance(key, str) else key
         self.fsync = fsync
         self._lock = threading.Lock()
-        self._seq = 0
-        self._head = GENESIS_HASH
 
-        if self.path.exists():
-            self._resume()
-        else:
+        if not self.path.exists():
             self.path.parent.mkdir(parents=True, exist_ok=True)
             self.path.touch(mode=0o600)
 
     @property
     def head(self) -> str:
         """Hash of the most recent record (the chain's current tip)."""
-        return self._head
+        with self._lock, self.path.open('rb') as handle:
+            return self._tip(handle)[1]
 
     @property
     def signed(self) -> bool:
@@ -99,42 +107,56 @@ class AuditStore:
             return hmac.new(self.key, message, hashlib.sha256).hexdigest()
         return hashlib.sha256(message).hexdigest()
 
-    def _resume(self) -> None:
-        """Read the last record so new appends extend the chain."""
-        last = None
-        with self.path.open('r', encoding='utf-8') as handle:
-            for line in handle:
-                if line.strip():
-                    last = line
-        if last is None:
-            return
+    @staticmethod
+    def _tip(handle: Any) -> tuple[int, str]:
+        """Read (sequence number, hash) of the last record in the file."""
+        handle.seek(0, os.SEEK_END)
+        end = handle.tell()
+        chunk = 8192
+        data = b''
+        position = end
+        # walk backwards until the last complete line is in hand
+        while position > 0:
+            step = min(chunk, position)
+            position -= step
+            handle.seek(position)
+            data = handle.read(step) + data
+            lines = [ln for ln in data.split(b'\n') if ln.strip()]
+            if len(lines) >= 2 or (lines and position == 0):
+                last = lines[-1]
+                break
+        else:
+            return 0, GENESIS_HASH
         record = json.loads(last)
-        self._seq = int(record['seq'])
-        self._head = str(record['hash'])
+        return int(record['seq']), str(record['hash'])
 
     def append(self, session_id: str, event: AuditEvent) -> dict[str, Any]:
         """Add one event to the chain and return the stored record."""
         with self._lock:
-            record: dict[str, Any] = {
-                'seq': self._seq + 1,
-                'session_id': session_id,
-                'timestamp': event.timestamp,
-                'kind': event.kind,
-                'summary': event.summary,
-                'detail': event.detail,
-                'prev': self._head,
-            }
-            record['hash'] = self._digest(self._head, canonical(record))
-
-            with self.path.open('a', encoding='utf-8') as handle:
-                handle.write(canonical(record) + '\n')
-                handle.flush()
-                if self.fsync:
-                    os.fsync(handle.fileno())
-
-            self._seq = record['seq']
-            self._head = record['hash']
-            return record
+            with self.path.open('a+b') as handle:
+                if fcntl is not None:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                try:
+                    seq, head = self._tip(handle)
+                    record: dict[str, Any] = {
+                        'seq': seq + 1,
+                        'session_id': session_id,
+                        'timestamp': event.timestamp,
+                        'kind': event.kind,
+                        'summary': event.summary,
+                        'detail': event.detail,
+                        'prev': head,
+                    }
+                    record['hash'] = self._digest(head, canonical(record))
+                    handle.seek(0, os.SEEK_END)
+                    handle.write((canonical(record) + '\n').encode())
+                    handle.flush()
+                    if self.fsync:
+                        os.fsync(handle.fileno())
+                    return record
+                finally:
+                    if fcntl is not None:
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
     def export(self, session_id: str | None = None) -> list[dict[str, Any]]:
         """Return stored records, optionally only those of one session."""

@@ -1,0 +1,146 @@
+# AgentGuard on Kubernetes: N stateless pods + Redis.
+# Create the secret first (do not commit real values):
+#   kubectl create secret generic agentguard \
+#     --from-literal=api-keys="$(openssl rand -hex 24)" \
+#     --from-literal=audit-key="$(openssl rand -hex 32)" \
+#     --from-literal=model-api-key="$MODEL_API_KEY"
+# Redis below is a single instance for a start. For production use a managed
+# or replicated Redis and point AGENTGUARD_REDIS_URL at it.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agentguard
+data:
+  WEB_CONCURRENCY: "2"
+  AGENTGUARD_REDIS_URL: redis://agentguard-redis:6379/0
+  AGENTGUARD_RATE_LIMIT: "6000"
+  AGENTGUARD_SESSION_TTL: "3600"
+  # one hash chain per pod; ship the files with your log collector
+  AGENTGUARD_AUDIT_FILE: /var/log/agentguard/audit-$HOSTNAME.jsonl
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentguard-redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: agentguard-redis}
+  template:
+    metadata:
+      labels: {app: agentguard-redis}
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          args: ["--save", "", "--appendonly", "no",
+                 "--maxmemory", "1gb", "--maxmemory-policy", "noeviction"]
+          ports: [{containerPort: 6379}]
+          resources:
+            requests: {cpu: 250m, memory: 512Mi}
+            limits: {memory: 1280Mi}
+          readinessProbe:
+            exec: {command: ["redis-cli", "ping"]}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agentguard-redis
+spec:
+  selector: {app: agentguard-redis}
+  ports: [{port: 6379}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentguard
+spec:
+  replicas: 3
+  selector:
+    matchLabels: {app: agentguard}
+  template:
+    metadata:
+      labels: {app: agentguard}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: /metrics
+        prometheus.io/port: "8000"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: agentguard
+          image: agentguard:0.5.0
+          ports: [{containerPort: 8000}]
+          envFrom:
+            - configMapRef: {name: agentguard}
+          env:
+            - name: HOSTNAME
+              valueFrom: {fieldRef: {fieldPath: metadata.name}}
+            - name: AGENTGUARD_API_KEYS
+              valueFrom: {secretKeyRef: {name: agentguard, key: api-keys}}
+            - name: AGENTGUARD_AUDIT_KEY
+              valueFrom: {secretKeyRef: {name: agentguard, key: audit-key}}
+            - name: MODEL_API_KEY
+              valueFrom:
+                secretKeyRef: {name: agentguard, key: model-api-key, optional: true}
+          # restarts only if the process is dead
+          livenessProbe:
+            httpGet: {path: /health, port: 8000}
+            periodSeconds: 10
+          # leaves the Service while Redis is unreachable
+          readinessProbe:
+            httpGet: {path: /ready, port: 8000}
+            periodSeconds: 5
+            failureThreshold: 2
+          resources:
+            requests: {cpu: "1", memory: 256Mi}
+            limits: {memory: 512Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+          volumeMounts:
+            - {name: audit, mountPath: /var/log/agentguard}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: audit
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agentguard
+spec:
+  selector: {app: agentguard}
+  ports: [{port: 80, targetPort: 8000}]
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: agentguard
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: agentguard
+  minReplicas: 3
+  maxReplicas: 30
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: {type: Utilization, averageUtilization: 65}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: agentguard
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels: {app: agentguard}

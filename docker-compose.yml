@@ -1,0 +1,45 @@
+# One AgentGuard container with several workers, sharing state through Redis.
+#   export AGENTGUARD_API_KEYS=$(openssl rand -hex 24)
+#   export AGENTGUARD_AUDIT_KEY=$(openssl rand -hex 32)
+#   export MODEL_API_KEY=...          # optional: enables the Meta judge
+#   docker compose up --build
+services:
+  redis:
+    image: redis:7-alpine
+    # sessions are short-lived working state, so no disk persistence
+    command: ["redis-server", "--save", "", "--appendonly", "no",
+              "--maxmemory", "512mb", "--maxmemory-policy", "noeviction"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  agentguard:
+    build: .
+    image: agentguard:0.5.0
+    depends_on:
+      redis:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    environment:
+      WEB_CONCURRENCY: "4"
+      AGENTGUARD_REDIS_URL: redis://redis:6379/0
+      AGENTGUARD_API_KEYS: ${AGENTGUARD_API_KEYS:?set AGENTGUARD_API_KEYS}
+      AGENTGUARD_AUDIT_KEY: ${AGENTGUARD_AUDIT_KEY:?set AGENTGUARD_AUDIT_KEY}
+      AGENTGUARD_AUDIT_FILE: /var/log/agentguard/audit-$${HOSTNAME}.jsonl
+      AGENTGUARD_RATE_LIMIT: "6000"
+      AGENTGUARD_SESSION_TTL: "3600"
+      MODEL_API_KEY: ${MODEL_API_KEY:-}
+    volumes:
+      - audit:/var/log/agentguard
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  audit:

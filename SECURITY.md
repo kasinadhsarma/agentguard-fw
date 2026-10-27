@@ -47,6 +47,15 @@ These are documented in the README and `docs/main.pdf`:
 - Running the proxy with no `AGENTGUARD_API_KEYS` is open by design (localhost
   demo only).
 
+## Redis
+
+With `AGENTGUARD_REDIS_URL`, session content is stored in Redis: web pages,
+tool outputs and the contents of files the agent read, which can include
+secrets. Treat that Redis like a secrets store: private network only,
+`requirepass` or ACLs, TLS (`rediss://`), no persistence (the examples
+disable it), and a short `AGENTGUARD_SESSION_TTL`. Anyone who can write to
+that Redis can plant "trusted" text and change verdicts.
+
 ## Deployment advice
 
 Set `AGENTGUARD_API_KEYS`, `AGENTGUARD_RATE_LIMIT`, `AGENTGUARD_AUDIT_FILE`

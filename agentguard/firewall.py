@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import itertools
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -20,23 +19,15 @@ from .models import (
     Trust,
 )
 from .policy import PolicyConfig, PolicyEngine
-from .taint import TaintTracker
+from .sessions import (
+    MemorySessionStore,
+    Session,
+    SessionStore,
+)
 
 
 # tool results from these sources hold secrets the agent must not leak
 SENSITIVE_SOURCE_PREFIXES = ('tool:read_file',)
-
-
-@dataclass
-class Session:
-    """State for one agent run."""
-
-    session_id: str
-    tracker: TaintTracker = field(default_factory=TaintTracker)
-    events: list[AuditEvent] = field(default_factory=list)
-    decisions: list[Decision] = field(default_factory=list)
-    counter: Any = field(default_factory=lambda: itertools.count(1))
-    last_used: float = 0.0
 
 
 @dataclass
@@ -58,74 +49,72 @@ class Firewall:
         audit_store: AuditStore | None = None,
         session_ttl: float | None = None,
         clock: Callable[[], float] = time.time,
+        store: SessionStore | None = None,
     ) -> None:
         """Create a firewall.
 
         judge:        a MetaJudge enables the LLM layer
         audit_store:  also writes every event to a hash-chained file
         session_ttl:  seconds of inactivity before a session expires
-        clock:        time source, replaceable in tests
+                      (ignored when a store is given; the store owns it)
+        clock:        time source for the in-memory store, for tests
+        store:        where sessions live; defaults to this process's memory,
+                      pass a RedisSessionStore to share them across workers
         """
         self.policy = PolicyEngine(config)
         self.judge = judge
         self.audit_store = audit_store
-        self.session_ttl = session_ttl
         self.clock = clock
-        self.sessions: dict[str, Session] = {}
+        self.store: SessionStore = store or MemorySessionStore(
+            ttl=session_ttl, clock=clock,
+        )
+
+    @property
+    def session_ttl(self) -> float | None:
+        """Seconds of inactivity before a session expires."""
+        return self.store.ttl
+
+    @property
+    def sessions(self) -> dict[str, Session]:
+        """The session dict of an in-memory store (tests and demos)."""
+        return self.store.sessions  # type: ignore[attr-defined]
 
     def new_session(self, user_prompt: str = '') -> str:
         """Open a session, optionally seeded with the user's request."""
-        self.purge_expired()
+        self.store.purge_expired()
         session_id = uuid.uuid4().hex[:12]
-        session = Session(session_id=session_id, last_used=self.clock())
-        self.sessions[session_id] = session
+        self.store.create(session_id)
         if user_prompt:
             self.ingest(session_id, user_prompt, source='user')
         return session_id
 
     def get(self, session_id: str) -> Session:
-        """Return a live session, or raise KeyError if missing or expired.
+        """Return a live session with its content, or raise KeyError.
 
         Every successful lookup counts as activity and renews the session.
         """
-        session = self.sessions[session_id]
-        now = self.clock()
-        if self._is_expired(session, now):
-            del self.sessions[session_id]
-            raise KeyError(session_id)
-        session.last_used = now
-        return session
+        return self.store.load(session_id)
+
+    def touch(self, session_id: str) -> None:
+        """Check a session exists and renew it, without loading content."""
+        self.store.touch(session_id)
 
     def purge_expired(self) -> int:
         """Drop every expired session and return how many were removed."""
-        now = self.clock()
-        stale = [
-            session_id
-            for session_id, session in self.sessions.items()
-            if self._is_expired(session, now)
-        ]
-        for session_id in stale:
-            del self.sessions[session_id]
-        return len(stale)
+        return self.store.purge_expired()
 
-    def _is_expired(self, session: Session, now: float) -> bool:
-        """True when the session has been idle longer than the TTL."""
-        if self.session_ttl is None:
-            return False
-        return now - session.last_used > self.session_ttl
-
-    def _log(
+    def _event(
         self,
-        session: Session,
+        session_id: str,
         kind: str,
         summary: str,
         detail: dict[str, Any],
-    ) -> None:
-        """Append an audit event to the session and to the store."""
+    ) -> AuditEvent:
+        """Build an audit event and write it to the audit log, if any."""
         event = AuditEvent.create(kind=kind, summary=summary, detail=detail)
-        session.events.append(event)
         if self.audit_store is not None:
-            self.audit_store.append(session.session_id, event)
+            self.audit_store.append(session_id, event)
+        return event
 
     def ingest(
         self,
@@ -135,12 +124,14 @@ class Firewall:
         sensitive: bool | None = None,
     ) -> ContentItem:
         """Label content and scan it before it reaches the agent."""
-        session = self.get(session_id)
+        # reserving the id first also proves the session exists, before
+        # any money is spent on the judge
+        item_id = self.store.reserve_item_id(session_id)
         trust = (
             Trust.TRUSTED if source in TRUSTED_SOURCES else Trust.UNTRUSTED
         )
         item = ContentItem(
-            item_id=next(session.counter),
+            item_id=item_id,
             text=text,
             source=source,
             trust=trust,
@@ -150,12 +141,13 @@ class Firewall:
             sensitive = source.startswith(SENSITIVE_SOURCE_PREFIXES)
         item.sensitive = bool(sensitive)
 
+        # the slow part (the judge makes a network call) runs before the
+        # item is stored, so a session is never held up while it waits
         if trust == Trust.UNTRUSTED:
             self._scan(item)
 
-        session.tracker.add(item)
-        self._log(
-            session,
+        event = self._event(
+            session_id,
             kind='ingest',
             summary=(
                 trust.value + ' content from ' + source +
@@ -171,6 +163,7 @@ class Firewall:
                 'findings': [f.rule_id for f in item.findings],
             },
         )
+        self.store.record_item(session_id, item, event)
         return item
 
     def authorize(
@@ -182,9 +175,8 @@ class Firewall:
         """Decide whether the agent may run a tool call."""
         session = self.get(session_id)
         decision = self.policy.evaluate(tool, arguments, session.tracker)
-        session.decisions.append(decision)
-        self._log(
-            session,
+        event = self._event(
+            session_id,
             kind='decision',
             summary=(
                 decision.verdict.value.upper() + ' ' + tool + ' [' +
@@ -198,6 +190,7 @@ class Firewall:
                 'evidence': decision.evidence,
             },
         )
+        self.store.append_event(session_id, event)
         return decision
 
     def record_model_output(
@@ -220,17 +213,18 @@ class Firewall:
         origins = session.tracker.origins_of(text)
 
         if not origins:
-            self._log(
-                session,
+            event = self._event(
+                session_id,
                 kind='model_output',
                 summary='model output with no untrusted origin',
                 detail={'derived': False, 'chars': len(text)},
             )
+            self.store.append_event(session_id, event)
             return ModelOutputResult(derived=False)
 
         sources = sorted({origin.source for origin in origins})
         item = ContentItem(
-            item_id=next(session.counter),
+            item_id=self.store.reserve_item_id(session_id),
             text=text,
             source='model:derived(' + ', '.join(sources) + ')',
             trust=Trust.UNTRUSTED,
@@ -242,9 +236,8 @@ class Firewall:
         item.injection_score = max(
             [score] + [origin.injection_score for origin in origins],
         )
-        session.tracker.add(item)
-        self._log(
-            session,
+        event = self._event(
+            session_id,
             kind='model_output',
             summary=(
                 'model output derived from ' + ', '.join(sources) +
@@ -259,6 +252,7 @@ class Firewall:
                 'sensitive': item.sensitive,
             },
         )
+        self.store.record_item(session_id, item, event)
         return ModelOutputResult(
             derived=True,
             item=item,
@@ -267,7 +261,7 @@ class Firewall:
 
     def audit(self, session_id: str) -> list[AuditEvent]:
         """Return the full audit trail of a session."""
-        return list(self.get(session_id).events)
+        return self.store.events(session_id)
 
     def _scan(self, item: ContentItem) -> None:
         """Run the heuristic detector and, if enabled, the LLM judge.

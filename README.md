@@ -1,6 +1,6 @@
 # AgentGuard
 
-A prompt injection firewall for AI agents. Version 0.4.0.
+A prompt injection firewall for AI agents. Version 0.5.0.
 
 Agents that browse the web, read email and call tools can be hijacked by
 instructions hidden in the content they read. AgentGuard sits between the
@@ -32,7 +32,7 @@ Rules are checked in the order R1, R2, R5, R3, R4, R0.
 ## Quick start
 
     pip install -r requirements.txt
-    python -m pytest                 # 139 tests
+    python -m pytest                 # 176 tests (18 use a real redis-server and skip without one)
     python -m demo.run_demo          # terminal demo (simulated agent)
     streamlit run demo/app.py        # visual demo
     python -m bench.run_bench        # measure detection on the bundled corpus
@@ -101,6 +101,9 @@ All protections come from environment variables:
 | `AGENTGUARD_SESSION_TTL` | seconds idle before a session expires (404 afterwards) |
 | `AGENTGUARD_AUDIT_FILE` | write every event to a hash-chained JSON Lines file |
 | `AGENTGUARD_AUDIT_KEY` | HMAC key for that file (strongly recommended) |
+| `AGENTGUARD_AUDIT_FSYNC` | `1` to fsync every audit record (slower, safer) |
+| `AGENTGUARD_REDIS_URL` | keep sessions, rate limits and metrics in Redis so many workers share them |
+| `AGENTGUARD_REDIS_MAX_CONNECTIONS` | Redis pool size per worker (default 50) |
 | `MODEL_API_KEY` | enable the Meta Model API judge |
 
 With nothing set the service runs open, which is fine on localhost for a
@@ -113,6 +116,85 @@ or deleting a line makes `GET /audit/verify` fail at that line. Without an
 HMAC key, someone who can rewrite the whole file can recompute the chain.
 Truncating the end is only caught if you saved `head` elsewhere and pass it
 as `expected_head`.
+
+## Scaling out
+
+One worker keeps sessions in memory. That is correct for one worker and
+wrong for two: the next request of a session may reach a worker that has
+never heard of it. Set `AGENTGUARD_REDIS_URL` and every worker and pod
+shares the same state, so you can add workers and machines freely.
+
+| What | Single worker (default) | With `AGENTGUARD_REDIS_URL` |
+|------|-------------------------|-----------------------------|
+| sessions and taint | process memory | Redis, expiring by TTL |
+| rate limit buckets | process memory | Redis, one atomic Lua script, Redis clock |
+| metrics | process memory | counters buffered per worker, flushed to Redis every second |
+| audit log | one hash chain in one file | one chain per pod (see below) |
+| Redis down | not applicable | 503 on every call, never allow |
+
+Other changes made for volume: the Meta judge reuses one pooled HTTP
+client, remembers verdicts by content hash, and stops calling the API for
+60 seconds after three failures in a row (a bad key or empty balance no
+longer adds a 15 second timeout to every ingest). Several processes may
+append to one audit file safely (file lock, tail re-read). Ingest and
+authorize each cost two Redis round trips.
+
+Run it:
+
+    # one machine, several workers
+    export AGENTGUARD_REDIS_URL=redis://localhost:6379/0
+    WEB_CONCURRENCY=4 uvicorn agentguard.proxy:app --timeout-keep-alive 30
+
+    # containers
+    docker compose up --build            # see docker-compose.yml
+    kubectl apply -f deploy/k8s/agentguard.yaml
+
+`Dockerfile`, `docker-compose.yml` and `deploy/k8s/agentguard.yaml` (3 pods,
+autoscaling to 30, readiness on `/ready`, locked-down security context,
+pod disruption budget) are included. **They have not been built or applied
+yet**; this environment has no Docker or Kubernetes. Their YAML parses,
+nothing more has been checked.
+
+### Measured capacity
+
+`python3 -m bench.scale_matrix` starts its own Redis and servers and drives
+simulated agents through open session, ingest a poisoned page, authorize the
+attacker's email, authorize the user's email. Results in
+`bench/load_results.json`, on a 2-core sandbox where the load generator
+shares the CPUs:
+
+| Setup | Server CPU per request | Attacks blocked | Errors |
+|-------|------------------------|-----------------|--------|
+| 1 worker, memory | 1.4 ms | 1500 of 1500 | none |
+| **2 workers, memory** | 1.7 ms | **709 of 1500** | **1743 sessions lost (404)** |
+| 1 worker, Redis | 1.9 ms | 1500 of 1500 | none |
+| 2 workers, Redis | 2.2 ms | 1500 of 1500 | none |
+
+How to read it:
+
+- The 2-worker memory row is the point: without Redis, scaling out silently
+  breaks the firewall's memory of what the user said. Redis fixes it.
+- The firewall engine itself takes about 0.03 ms per call. The rest of the
+  1.4 to 2.2 ms is the web framework and Redis, so capacity is a framework
+  cost, not a detection cost.
+- CPU per request is the number to trust. Requests per second and latency in
+  that file measure a Python load generator that was using more CPU than the
+  server, so ignore them.
+- Redis spent about 0.14 ms of CPU per request, so one Redis core can serve
+  roughly 7000 requests per second.
+- Rough sizing, not measured at that scale: one server core handles about
+  450 to 550 requests per second, and a tool call costs two requests, so
+  plan for about 250 guarded tool calls per second per core. Pods share
+  nothing but Redis, so capacity should grow close to linearly until Redis
+  is the limit; only 1 and 2 workers were actually tested.
+
+### Audit log with many pods
+
+Each pod writes its own hash chain (`audit-$HOSTNAME.jsonl`), and
+`GET /audit/verify` checks the file of the pod that answers. A single chain
+shared by all pods would need a shared volume with reliable file locking
+(not NFS) or a database. Ship the per-pod files to your log system and keep
+each pod's `head` outside the pod to detect truncation.
 
 ## HTTP API
 
@@ -128,8 +210,13 @@ as `expected_head`.
 | GET | `/audit/verify` | check the audit log's hash chain |
 | GET | `/audit/export` | export audit log records |
 | GET | `/health` | liveness and which protections are on |
+| GET | `/ready` | readiness: 503 while the session store is unreachable |
+| GET | `/metrics` | Prometheus metrics (needs the API key when keys are set) |
 
-Only GET and POST are accepted. Every other method returns 405.
+Only GET and POST are accepted. Every other method returns 405. A session
+holds at most 1000 items (413 beyond that). If Redis cannot be reached the
+service answers 503; it never guesses a verdict, so an integrator must treat
+503 as "do not run the tool".
 
 ## Optional: Meta Model API judge
 
@@ -195,11 +282,13 @@ How to read these numbers:
 ## Layout
 
     agentguard/            detector, normalize, judge, taint, policy, tool_schema,
-                           firewall, audit_store, ratelimit, settings, proxy
+                           firewall, sessions, audit_store, ratelimit, metrics,
+                           settings, proxy
     agentguard/adapters/   ToolGuard and the OpenAI, Anthropic, LangChain adapters
     demo/                  simulated agent, live agent, scenarios, CLI and Streamlit demos
-    bench/                 labelled corpus and benchmark runner
-    tests/                 139 tests
+    bench/                 labelled corpus, benchmark runner, load test, scale matrix
+    deploy/k8s/            Kubernetes manifests (Dockerfile and compose at the top)
+    tests/                 176 tests
     docs/                  LaTeX documentation (main.tex, main.pdf), Mermaid diagrams
     CHANGELOG.md           what changed in each version
 
@@ -217,7 +306,14 @@ How to read these numbers:
   Only top-level arguments are checked as targets, and only a subset of
   JSON Schema is validated.
 - The detector is English-only and pattern-based.
-- The rate limiter and sessions live in one process's memory.
+- Without Redis the rate limiter and sessions live in one process's memory,
+  so run exactly one worker. With Redis, session items (page text and the
+  contents of files the agent read, including secrets) are stored there in
+  plain text until the TTL expires. Use a private network, a password and
+  `rediss://` (TLS), and a short `AGENTGUARD_SESSION_TTL`.
+- Redis Cluster key names are cluster-safe, but it was never tested; the
+  metrics hash is one key and would be a hot spot there.
+- Metrics lose at most about one second of counts when a worker dies.
 - The Meta judge and the live agent have never run against the real API.
 
 ## Documentation

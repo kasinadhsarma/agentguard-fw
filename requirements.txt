@@ -5,3 +5,4 @@ pydantic>=2.6
 streamlit>=1.30
 pytest>=8.0
 langchain-core>=0.3   # optional: only for the LangChain adapter and its test
+redis>=5.0         # optional: share sessions between workers (AGENTGUARD_REDIS_URL)

@@ -1,0 +1,6 @@
+# Runtime dependencies for running the proxy as a service (no demo, no tests)
+fastapi>=0.110
+uvicorn[standard]>=0.29
+httpx>=0.27
+pydantic>=2.6
+redis>=5.0

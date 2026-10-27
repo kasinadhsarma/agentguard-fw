@@ -1,0 +1,235 @@
+{
+  "machine": {
+    "cpus": 2,
+    "python": "3.13.17",
+    "note": "load generator and server share these CPUs"
+  },
+  "results": {
+    "memory-1w": {
+      "url": "http://127.0.0.1:37447",
+      "server": {
+        "status": "ok",
+        "version": "0.5.0",
+        "llm_judge": false,
+        "judge_paused": false,
+        "auth_required": false,
+        "rate_limited": false,
+        "audit_log": false,
+        "audit_signed": false,
+        "session_ttl": null,
+        "session_store": "memory",
+        "metrics": "memory"
+      },
+      "agents": 1500,
+      "concurrency": 64,
+      "seconds": 21.84,
+      "requests_ok": 6000,
+      "requests_per_second": 274.8,
+      "latency_ms": {
+        "open_session": {
+          "p50": 117.19,
+          "p95": 725.82,
+          "p99": 1247.37,
+          "mean": 211.37
+        },
+        "ingest": {
+          "p50": 157.27,
+          "p95": 755.37,
+          "p99": 1214.08,
+          "mean": 239.54
+        },
+        "authorize": {
+          "p50": 148.18,
+          "p95": 752.19,
+          "p99": 1213.21,
+          "mean": 234.98
+        }
+      },
+      "correctness": {
+        "attacks_blocked": 1500,
+        "attacks_allowed": 0,
+        "attacks_held_for_confirm": 0,
+        "attacks_without_a_verdict": 0,
+        "legit_allowed_or_confirmed": 1500,
+        "legit_blocked": 0
+      },
+      "server_cpu": {
+        "cpu_seconds": 8.44,
+        "cpu_ms_per_request": 1.407,
+        "one_core_capacity_rps": 711
+      },
+      "errors": {},
+      "workers": 1
+    },
+    "memory-2w": {
+      "url": "http://127.0.0.1:40529",
+      "server": {
+        "status": "ok",
+        "version": "0.5.0",
+        "llm_judge": false,
+        "judge_paused": false,
+        "auth_required": false,
+        "rate_limited": false,
+        "audit_log": false,
+        "audit_signed": false,
+        "session_ttl": null,
+        "session_store": "memory",
+        "metrics": "memory"
+      },
+      "agents": 1500,
+      "concurrency": 64,
+      "seconds": 37.62,
+      "requests_ok": 6000,
+      "requests_per_second": 159.5,
+      "latency_ms": {
+        "open_session": {
+          "p50": 278.48,
+          "p95": 1226.07,
+          "p99": 2162.86,
+          "mean": 418.7
+        },
+        "ingest": {
+          "p50": 237.97,
+          "p95": 1234.09,
+          "p99": 2054.24,
+          "mean": 402.57
+        },
+        "authorize": {
+          "p50": 213.96,
+          "p95": 1282.4,
+          "p99": 2044.14,
+          "mean": 380.66
+        }
+      },
+      "correctness": {
+        "attacks_blocked": 709,
+        "attacks_allowed": 0,
+        "attacks_held_for_confirm": 164,
+        "attacks_without_a_verdict": 627,
+        "legit_allowed_or_confirmed": 870,
+        "legit_blocked": 0
+      },
+      "server_cpu": {
+        "cpu_seconds": 10.49,
+        "cpu_ms_per_request": 1.748,
+        "one_core_capacity_rps": 572
+      },
+      "errors": {
+        "http_404": 1743
+      },
+      "workers": 2
+    },
+    "redis-1w": {
+      "url": "http://127.0.0.1:36491",
+      "server": {
+        "status": "ok",
+        "version": "0.5.0",
+        "llm_judge": false,
+        "judge_paused": false,
+        "auth_required": false,
+        "rate_limited": false,
+        "audit_log": false,
+        "audit_signed": false,
+        "session_ttl": null,
+        "session_store": "redis",
+        "metrics": "redis"
+      },
+      "agents": 1500,
+      "concurrency": 64,
+      "seconds": 27.66,
+      "requests_ok": 6000,
+      "requests_per_second": 216.9,
+      "latency_ms": {
+        "open_session": {
+          "p50": 195.64,
+          "p95": 943.32,
+          "p99": 1578.13,
+          "mean": 292.96
+        },
+        "ingest": {
+          "p50": 189.58,
+          "p95": 956.91,
+          "p99": 1550.41,
+          "mean": 294.62
+        },
+        "authorize": {
+          "p50": 186.29,
+          "p95": 928.03,
+          "p99": 1526.03,
+          "mean": 289.81
+        }
+      },
+      "correctness": {
+        "attacks_blocked": 1500,
+        "attacks_allowed": 0,
+        "attacks_held_for_confirm": 0,
+        "attacks_without_a_verdict": 0,
+        "legit_allowed_or_confirmed": 1500,
+        "legit_blocked": 0
+      },
+      "server_cpu": {
+        "cpu_seconds": 11.17,
+        "cpu_ms_per_request": 1.862,
+        "one_core_capacity_rps": 537
+      },
+      "errors": {},
+      "workers": 1
+    },
+    "redis-2w": {
+      "url": "http://127.0.0.1:33897",
+      "server": {
+        "status": "ok",
+        "version": "0.5.0",
+        "llm_judge": false,
+        "judge_paused": false,
+        "auth_required": false,
+        "rate_limited": false,
+        "audit_log": false,
+        "audit_signed": false,
+        "session_ttl": null,
+        "session_store": "redis",
+        "metrics": "redis"
+      },
+      "agents": 1500,
+      "concurrency": 64,
+      "seconds": 34.31,
+      "requests_ok": 6000,
+      "requests_per_second": 174.9,
+      "latency_ms": {
+        "open_session": {
+          "p50": 279.23,
+          "p95": 1278.3,
+          "p99": 2019.34,
+          "mean": 419.02
+        },
+        "ingest": {
+          "p50": 209.65,
+          "p95": 1150.84,
+          "p99": 2123.84,
+          "mean": 359.67
+        },
+        "authorize": {
+          "p50": 162.38,
+          "p95": 1155.47,
+          "p99": 2065.97,
+          "mean": 332.6
+        }
+      },
+      "correctness": {
+        "attacks_blocked": 1500,
+        "attacks_allowed": 0,
+        "attacks_held_for_confirm": 0,
+        "attacks_without_a_verdict": 0,
+        "legit_allowed_or_confirmed": 1500,
+        "legit_blocked": 0
+      },
+      "server_cpu": {
+        "cpu_seconds": 13.35,
+        "cpu_ms_per_request": 2.225,
+        "one_core_capacity_rps": 449
+      },
+      "errors": {},
+      "workers": 2
+    }
+  }
+}

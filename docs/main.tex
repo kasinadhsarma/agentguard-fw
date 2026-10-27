@@ -39,7 +39,7 @@
 \pagestyle{fancy}
 \fancyhf{}
 \fancyhead[L]{\product{} technical documentation}
-\fancyhead[R]{v0.4.0}
+\fancyhead[R]{v0.5.0}
 \fancyfoot[C]{\thepage}
 
 % code listings
@@ -81,7 +81,7 @@
 \title{%
   \textbf{\product}\\[4pt]
   \Large A Prompt Injection Firewall for AI Agents\\[4pt]
-  \large Technical Documentation, version 0.4.0}
+  \large Technical Documentation, version 0.5.0}
 \author{Kasinadh Sarma}
 \date{October 2026}
 
@@ -267,8 +267,10 @@ The order matters. The page is ingested \emph{before} the model sees it, so the 
 
 \begin{itemize}
   \item \textbf{In-process.} Import \code{Firewall} (or wrap tools with \code{ToolGuard}) and call it directly. No network hop, simplest to test. The demos use this mode.
-  \item \textbf{HTTP service.} Run \code{uvicorn agentguard.proxy:app} and call the endpoints from any language. Sessions live in the memory of that process and expire when idle; with an audit file configured, events also go to a hash-chained log.
+  \item \textbf{HTTP service, one worker.} Run \code{uvicorn agentguard.proxy:app} and call the endpoints from any language. Sessions live in the memory of that process and expire when idle; with an audit file configured, events also go to a hash-chained log.
+  \item \textbf{HTTP service, many workers or pods.} Set \code{AGENTGUARD_REDIS_URL}. Sessions, rate-limit buckets and metrics move to Redis and every worker shares them (Diagram~\ref{dg:scaled}, Section~\ref{sec:scale}). Without Redis, more than one worker is wrong, not merely slow.
 \end{itemize}
+\mermaidfigure{09-scaled-deployment}{Scaled deployment: stateless pods sharing one Redis.}{dg:scaled}
 
 % ================================================================ 5
 \section{Module reference}
@@ -343,6 +345,8 @@ Timeout & 15 seconds \\
 \paragraph{Effect on the score.} If the model says ``injection'', a finding \code{llm_judge} is added and the item's score becomes the maximum of its current score, $0.5$ and the model's confidence. A ``not an injection'' verdict changes nothing.
 
 \paragraph{Failure modes.} No key, an HTTP error, a non-JSON reply or a missing field all produce \code{available=False}. The firewall then continues on heuristics. The judge never raises an exception into the agent loop.
+
+\paragraph{Volume.} One pooled HTTP client is reused. Verdicts are cached by the SHA-256 of the first 6000 characters (2048 entries, least recently used out), so an identical page costs one call. A circuit breaker counts consecutive failures; after three it stops calling the API for 60 seconds and reports ``judge paused''. Without it, a bad key or an empty balance (HTTP 401 or 402) would add the 15 second timeout to every ingest. Failures are never cached. \code{GET /health} shows \code{judge_paused}.
 
 \paragraph{Privacy.} Trusted content is never scanned or sent. Content marked \code{sensitive} (by default, the result of a \code{read_file} call) is scanned locally only and is never sent to the external API.
 
@@ -466,6 +470,28 @@ R0 & None of the above. & allow \\
 
 \paragraph{Why the confirm rules exist.} R4 keeps a legitimate action from sailing through a poisoned context unreviewed. R3 covers the case where the agent, not the page, invented a recipient. Both hand the choice to the user rather than guessing.
 
+\subsection{Session stores (\texttt{sessions.py})}\label{sec:sessions}
+A \code{SessionStore} holds each session's labeled items and audit events. Two implementations share one interface.
+
+\paragraph{\code{MemorySessionStore}.} A dictionary in this process, with an idle TTL and an injectable clock. Correct for one worker only.
+
+\paragraph{\code{RedisSessionStore}.} Shared by every worker. The layout is append-only, so concurrent requests never overwrite one another and no lock is needed:
+\begin{lstlisting}
+ag:{id}:meta     hash  next_id, created
+ag:{id}:items    list  one JSON document per content item
+ag:{id}:events   list  audit events, newest 5000 kept
+\end{lstlisting}
+\code{{id}} is a hash tag, so the three keys of a session fall in one cluster slot. Every operation renews the TTL of all three keys together, because a list that expired before its metadata would silently lose recorded taint.
+
+\paragraph{Round trips.} \code{ingest} reserves an item id with one atomic Lua script that also checks the session exists and renews it, then writes the item and its event in one pipeline: two round trips. \code{authorize} reads all items in one pipeline and appends its event in another: two round trips. The reserve script never recreates an expired session, which a test checks. The judge call in \code{ingest} happens between the two steps, so a slow network call never holds a session.
+
+\paragraph{Limits and failure.} A session holds at most 1000 items (\code{SessionFull}, HTTP 413). If Redis cannot be reached the store raises \code{StoreUnavailable}, the proxy answers 503, and \code{/ready} turns 503 so an orchestrator stops sending traffic. The firewall never guesses a verdict. An integrator must treat 503 as ``do not run the tool''.
+
+\paragraph{What is stored.} Items include page text and the contents of files the agent read, so Redis holds secrets until the TTL ends. It must be a private, authenticated, TLS-protected instance with persistence off.
+
+\subsection{Metrics (\texttt{metrics.py})}
+\code{GET /metrics} returns the Prometheus text format: \code{requests_total} and a latency histogram by route \emph{template} (never the raw path, so session ids cannot blow up the label set), \code{decisions_total} by verdict and rule, and \code{ingest_total} by trust and whether the detector flagged it. The endpoint needs the API key when keys are set. Counters are kept in memory for one worker; with Redis, each worker buffers its increments and a background thread flushes them to one Redis hash every second and at shutdown, so a request pays no network round trip for metrics, and a scrape of any worker reports the fleet. A worker that dies loses at most about a second of counts. Recording never raises into a request.
+
 \subsection{Firewall (\texttt{firewall.py})}
 \paragraph{\code{new_session(user_prompt)}.} Creates a session and ingests the user's request with source \code{user}.
 
@@ -500,6 +526,8 @@ where $H$ is SHA-256, or HMAC-SHA-256 when a key is configured. \code{verify()} 
   \item Neither mode detects removal of the \emph{tail} by itself. Store \code{head} elsewhere and pass it as \code{expected_head} to \code{verify()} to catch that.
 \end{itemize}
 
+\paragraph{Several processes.} Many workers may append to one file. Each append takes an exclusive \code{flock}, re-reads the last record to learn the real chain tip, and then writes, so the chain stays unbroken (a test runs six processes appending 360 large records and verifies the result). This needs a local filesystem or a volume with reliable locks, not NFS. In a multi-pod deployment each pod writes its own chain (\code{audit-$HOSTNAME.jsonl}), and \code{/audit/verify} checks the file of the pod that answers.
+
 \subsection{Tool definitions (\texttt{tool\_schema.py})}
 \code{PolicyConfig.register_tools(definitions)} accepts tool definitions in the OpenAI (\code{function.parameters}), Anthropic (\code{input_schema}), MCP (\code{inputSchema}) and plain shapes. For each tool it stores the schema, generates a profile unless a hand-written one exists, and returns a summary of what it inferred.
 
@@ -525,7 +553,7 @@ A schema author can mark any property as a target with the key \code{x-agentguar
 \paragraph{Validation (R5).} \code{validate_arguments} checks a subset of JSON Schema: type, enum, required, properties, additionalProperties false, items, minLength, maxLength, minimum, maximum, pattern and the email format. Booleans are not accepted as integers. Other keywords are ignored, and only top-level arguments are examined as targets.
 
 \subsection{Rate limiting and settings (\texttt{ratelimit.py}, \texttt{settings.py})}
-Each caller has a token bucket holding up to \code{burst} tokens, refilled at \code{per_minute}$/60$ tokens per second; a request costs one token. The caller is the API key (hashed) or, without a valid key, the client address. Failed authentication attempts also cost a token, so key guessing meets a 429. The limiter lives in one process's memory; behind several workers each counts separately.
+Each caller has a token bucket holding up to \code{burst} tokens, refilled at \code{per_minute}$/60$ tokens per second; a request costs one token. The caller is the API key (hashed) or, without a valid key, the client address. Failed authentication attempts also cost a token, so key guessing meets a 429. The default limiter lives in one process's memory. With Redis, \code{RedisRateLimiter} runs the same bucket as one atomic Lua script on the Redis clock, so workers with different clocks still share it; if Redis is unreachable it raises and the proxy answers 503 rather than letting traffic through unmetered.
 
 \code{ProxySettings.from_env()} reads all service settings from environment variables (Table~\ref{tab:config}) and rejects non-positive numbers at startup.
 
@@ -548,7 +576,7 @@ protect\_langchain\_tools(tools, guard) & LangChain tools; keeps name, descripti
 \end{table}
 
 \subsection{HTTP proxy (\texttt{proxy.py})}
-A FastAPI application built by \code{create_app(firewall, settings, limiter)}. Checks run in a fixed order: method (only GET and POST, else 405 with an \code{Allow} header, on real and unknown paths alike), then authentication if API keys are configured (401, constant-time comparison over hashed keys, \code{X-API-Key} or Bearer token), then the rate limit (429 with \code{Retry-After}). \code{/health} stays open for probes. Request bodies are Pydantic models with \code{extra='forbid'}, so unknown fields are rejected with 422. The module-level \code{app} reads its settings from the environment and builds its firewall with \code{MetaJudge()}, so the judge turns on when \code{MODEL_API_KEY} is set. The proxy's API key belongs to the integrator's code and must be kept away from the model.
+A FastAPI application built by \code{create_app(firewall, settings, limiter)}. Checks run in a fixed order: method (only GET and POST, else 405 with an \code{Allow} header, on real and unknown paths alike), then authentication if API keys are configured (401, constant-time comparison over hashed keys, \code{X-API-Key} or Bearer token), then the rate limit (429 with \code{Retry-After}). \code{/health} stays open for probes. Request bodies are Pydantic models with \code{extra='forbid'}, so unknown fields are rejected with 422. The module-level \code{app} reads its settings from the environment and builds its firewall with \code{MetaJudge()}, so the judge turns on when \code{MODEL_API_KEY} is set. The checks are a plain ASGI middleware, which costs about 0.4 ms less CPU per request than the decorator form. Route handlers are synchronous and run in the thread pool. A missing session is a 404, a full session 413, an unreachable store 503. \code{/ready} reports store reachability and \code{/health} reports only that the process is alive. The proxy's API key belongs to the integrator's code and must be kept away from the model.
 
 % ================================================================ 6
 \section{HTTP API reference}\label{sec:api}
@@ -730,8 +758,11 @@ AGENTGUARD\_API\_KEYS & Comma-separated keys. When set, every endpoint except /h
 AGENTGUARD\_RATE\_LIMIT & Requests per minute per caller; 429 beyond it. Off if unset. \\
 AGENTGUARD\_RATE\_BURST & Bucket size; defaults to the per-minute rate. \\
 AGENTGUARD\_SESSION\_TTL & Seconds idle before a session expires. \\
-AGENTGUARD\_AUDIT\_FILE & Path of the hash-chained audit log. Off if unset. \\
+AGENTGUARD\_AUDIT\_FILE & Path of the hash-chained audit log; \$VARS are expanded (audit-\$HOSTNAME.jsonl). Off if unset. \\
 AGENTGUARD\_AUDIT\_KEY & HMAC key for the audit log. Strongly recommended. \\
+AGENTGUARD\_AUDIT\_FSYNC & 1 to fsync every audit record. \\
+AGENTGUARD\_REDIS\_URL & Share sessions, rate limits and metrics between workers through Redis. \\
+AGENTGUARD\_REDIS\_MAX\_CONNECTIONS & Redis pool size per worker. Default 50. \\
 MetaJudge(model=...) & Choose another model id, for example \code{muse-spark-1.2}. \\
 MetaJudge(base\_url=...) & Point at a compatible endpoint. \\
 PolicyConfig(profiles=...) & Replace or extend the tool profiles. \\
@@ -744,12 +775,13 @@ PolicyConfig(suspicious\_threshold=...) & Score at which R4 asks for confirmatio
 \subsection{Running}
 \begin{lstlisting}[language=bash]
 pip install -r requirements.txt
-python -m pytest                 # 139 tests
+python -m pytest                 # 176 tests
 python -m demo.run_demo          # terminal demo (simulated agent)
 python -m demo.run_demo --live   # real model as the agent (needs MODEL_API_KEY)
 python -m bench.run_bench        # benchmark on the bundled corpus
 streamlit run demo/app.py        # visual demo
 uvicorn agentguard.proxy:app     # HTTP service
+python -m bench.scale_matrix     # load test: memory vs Redis, 1 and 2 workers
 \end{lstlisting}
 
 % ================================================================ 8
@@ -794,12 +826,13 @@ test\_proxy\_security.py & 17 & 401, key styles, open health, 405 before auth, 4
 test\_ratelimit\_ttl.py & 7 & Burst, refill, separate buckets, session expiry and purge. \\
 test\_adapters.py & 11 & Plain functions, async, OpenAI and Anthropic styles, sensitive results, real LangChain tools. \\
 test\_live\_agent.py & 10 & Scripted model: obedient with and without the firewall, refusals seen by the model, parsing, failures. \\
+test\_scale.py & 37 & Sessions shared between workers over a real Redis, TTL and renewal, no resurrection, item limit, round-trip count, 503 when Redis is down, shared rate limit, metrics (render, flush, shutdown), six processes on one audit chain, judge cache and circuit breaker, settings. \\
 test\_bench.py & 3 & Corpus shape; regression guards on attacks allowed and on benign friction. \\
 \midrule
-\textbf{Total} & \textbf{139} & \\
+\textbf{Total} & \textbf{176} & \\
 \bottomrule
 \end{tabularx}
-\caption{Automated tests. The judge and live-agent tests use a mocked HTTP transport and make no network calls. The LangChain test is skipped if \code{langchain-core} is not installed.}
+\caption{Automated tests. The judge and live-agent tests use a mocked HTTP transport and make no network calls. The LangChain test is skipped if \code{langchain-core} is not installed, and 18 tests in test\_scale.py are skipped when no \code{redis-server} binary is on the path.}
 \end{table}
 
 \subsection{Benchmark on the bundled corpus}
@@ -857,6 +890,52 @@ unicode & 3/3 & 3/3 \\
 \subsection{What has and has not been measured}
 The scenario and benchmark results show that the rules behave as designed on text the authors wrote. They do not measure detection against real, adaptive attackers or on a public dataset. The Meta judge and the live agent have been tested only against a mocked server, never the real API. No false-positive rate has been measured on real agent traffic. The LangChain adapter was tested against real \code{langchain-core}; the OpenAI and Anthropic adapters against hand-built messages in those formats, not against the vendors' SDKs.
 
+% ================================================================ scale
+\section{Scaling out}\label{sec:scale}
+
+\subsection{What changed in version 0.5}
+One worker with sessions in memory is correct and cannot grow. Two workers behind a balancer are wrong, because the next request of a session may reach a worker that never saw it: the firewall would forget what the user said, and a legitimate request or an attack would be judged without its context. Version 0.5 moves that state into Redis (Section~\ref{sec:sessions}), shares the rate limiter, adds metrics, lets several processes append to the audit log, and makes the judge cheaper and safer under volume. A \code{Dockerfile}, a compose file and Kubernetes manifests are included.
+
+\subsection{Measured}
+\code{python -m bench.scale_matrix} starts its own Redis and servers and drives simulated agents. Each agent opens a session, ingests a page that names an attacker address, asks to send mail to the attacker, then asks to send mail to the user's own address. The run therefore checks correctness under load as well as cost. Raw results are in \code{bench/load_results.json}.
+
+\begin{table}[H]
+\centering
+\begin{tabularx}{\linewidth}{@{}p{4.6cm}rrY@{}}
+\toprule
+Setup & CPU ms per request & Attacks blocked & Errors \\
+\midrule
+1 worker, memory & 1.4 & 1500 of 1500 & -- \\
+2 workers, memory (wrong) & 1.7 & 709 of 1500 & 1743 sessions lost (404) \\
+1 worker, Redis & 1.9 & 1500 of 1500 & -- \\
+2 workers, Redis & 2.2 & 1500 of 1500 & -- \\
+\bottomrule
+\end{tabularx}
+\caption{1500 agents, 6000 requests per setup, 64 concurrent, on a 2-core sandbox shared with the load generator. CPU is the server's own user plus system time divided by requests.}
+\end{table}
+
+How to read this:
+\begin{itemize}
+  \item The memory row with two workers is the result that matters: sessions were lost (HTTP 404), so only 709 of 1500 attacks received a block verdict and the rest received no verdict at all. An integrator that treated a failed call as ``allow'' would have been exposed. Redis removes that failure.
+  \item The firewall engine itself costs about 0.03 ms per call. Almost all of the 1.4 to 2.2 ms is the web framework and Redis, so capacity is limited by plumbing, not by detection.
+  \item Redis used about 0.14 ms of CPU per request, so one Redis core can serve roughly 7000 requests per second.
+  \item Requests per second and latency in the result file measure a Python load generator that used more CPU than the server. They are not the firewall's capacity and are not quoted here.
+  \item Sizing, an estimate and not a measurement at that scale: one server core handles roughly 450 to 550 requests per second. A guarded tool call costs two requests (ingest the result, authorize the next call), so plan for about 250 tool calls per second per core. Pods share only Redis, so capacity should grow close to linearly until Redis is the limit. Only one and two workers on two cores were tested.
+\end{itemize}
+
+\subsection{Failure behaviour}
+\begin{itemize}
+  \item Redis unreachable: sessions, ingest and authorize answer 503; \code{/ready} answers 503 so traffic is withdrawn; \code{/health} stays 200 so the pod is not restarted for a dependency's fault. The integrator must treat 503 as a refusal.
+  \item Judge failing: three failures in a row pause the judge for 60 seconds and the firewall continues on heuristics and origin tracking.
+  \item A worker dies: its sessions survive in Redis; it loses at most about a second of metric counts.
+\end{itemize}
+
+\subsection{Deployment files}
+\code{Dockerfile} (unprivileged user, one worker per \code{WEB_CONCURRENCY}, keep-alive 30 s), \code{docker-compose.yml} (Redis with no persistence plus the service, read-only filesystem, all capabilities dropped) and \code{deploy/k8s/agentguard.yaml} (three pods autoscaled to 30 on CPU, readiness on \code{/ready}, liveness on \code{/health}, a pod disruption budget, a secret for keys). \textbf{None of these has been built or applied}: the environment this was written in has neither Docker nor Kubernetes. Their YAML parses and nothing more has been checked.
+
+\subsection{Not done}
+Redis Cluster (key names are cluster-safe but this was never tested, and the metrics hash is a single hot key); a Redis with replication and failover; a single audit chain across pods; a load test from a separate machine; a test at more than two workers.
+
 % ================================================================ 9
 \section{Security analysis and limitations}
 
@@ -870,7 +949,8 @@ Textual target matching & Common disguises are decoded, but a target the page ne
 Derived content is partly tracked & Model output is linked to untrusted content only when you record it, and only through a copied span of 24 characters or a named address or host. A free paraphrase is not linked. & Semantic linkage of model output to its sources. \\
 Judge can be attacked too & A page can try to talk the judge into answering ``clean''. & The judge can only raise suspicion, and R1 does not depend on it. \\
 Judge sees untrusted text off-machine & Content leaves the host when the judge is on. & Never sent: trusted or sensitive content. Optionally disable or self-host the endpoint. \\
-Single-process state & Sessions, the rate limiter and expiry live in one process's memory; several workers do not share them. & A shared store and a shared limiter. \\
+Process state without Redis & Without \code{AGENTGUARD_REDIS_URL} sessions and the limiter live in one process; a second worker silently breaks the firewall's memory (Section~\ref{sec:scale}). & Set the Redis URL before adding workers. \\
+Redis holds secrets & With Redis, page text and the contents of files the agent read sit there in plain text until the TTL ends; anyone who can write to it can plant ``trusted'' text. & Private network, password, TLS, no persistence, short TTL. \\
 Audit log tail & Removing the end of the log is invisible to the chain alone, and without an HMAC key a full rewrite can be recomputed. & Set the HMAC key; save the head elsewhere and verify with it. \\
 Generated profiles are heuristics & A tool named innocently but doing harm is classed by its name; nested arguments are not examined as targets; only a subset of JSON Schema is validated. & Review \code{GET /tools}. Hand-write profiles for critical tools. \\
 Detector coverage & English only and pattern based; misses polite, encoded and multilingual text; flags some benign pages that tell humans to send things to an address. & Rely on origin tracking and R3. Expand and measure on external data. \\
@@ -885,14 +965,15 @@ Confirmation fatigue & Too many R3 or R4 prompts teach users to click through. &
 
 % ================================================================ 10
 \section{Future work}
-The items planned for versions 0.2 to 0.4 (decoded targets, taint through model output, a benchmark, authentication, rate limiting, session expiry, a tamper-evident audit log, tool schemas with generated profiles, framework adapters and a live demo) are implemented. What remains:
+The items planned for versions 0.2 to 0.5 (decoded targets, taint through model output, a benchmark, authentication, rate limiting, session expiry, a tamper-evident audit log, tool schemas with generated profiles, framework adapters, a live demo, and a Redis-backed multi-worker mode with metrics) are implemented. What remains:
 \begin{itemize}
   \item Run the Meta judge and the live agent against the real API and report the results. This has never been done.
   \item Measure on external injection datasets, with a held-out set the detector was not written against.
   \item Link model output to its sources semantically, so a paraphrase with no copied span stays tainted.
   \item Detect injections in more languages, and reduce false positives on pages that ask humans to send things to an address.
   \item Examine nested arguments as targets and support more of JSON Schema.
-  \item A shared session store and rate limiter for multi-worker deployments.
+  \item Build and run the Docker and Kubernetes files, test Redis Cluster and failover, and load test from a separate machine and beyond two workers.
+  \item One audit chain across pods (a database or a shared volume with real locking).
   \item Anchor the audit log's head externally on a schedule.
   \item Test the OpenAI and Anthropic adapters against the vendors' SDKs.
 \end{itemize}
@@ -913,7 +994,9 @@ agentguard-fw/
     policy.py        rules R0 to R5
     firewall.py      sessions, ingest, model output, authorize
     audit_store.py   hash-chained audit log
-    ratelimit.py     token-bucket limiter
+    sessions.py      memory and Redis session stores
+    ratelimit.py     token-bucket limiters (local, Redis)
+    metrics.py       Prometheus counters and histogram
     settings.py      environment-based service settings
     proxy.py         FastAPI service
     adapters/        ToolGuard, OpenAI, Anthropic, LangChain
@@ -923,8 +1006,11 @@ agentguard-fw/
     live_agent.py    model-driven agent (Meta Model API)
     run_demo.py      terminal demo, --live for the real model
     app.py           Streamlit demo
-  bench/             corpus.py, run_bench.py, results.json
-  tests/             139 tests
+  bench/             corpus, run_bench, load_test, scale_matrix, results
+  deploy/k8s/        Kubernetes manifests
+  Dockerfile, docker-compose.yml, requirements-server.txt
+  LICENSE, SECURITY.md, CONTRIBUTING.md
+  tests/             176 tests
   CHANGELOG.md       release notes
   docs/
     main.tex         this document
@@ -959,6 +1045,8 @@ The script renders every \code{.mmd} file to PNG with \code{mmdc} and then runs 
 \lstinputlisting[style=mermaid]{diagrams/07-attack-chain.mmd}
 \subsection{Agent loop}
 \lstinputlisting[style=mermaid]{diagrams/08-agent-loop.mmd}
+\subsection{Scaled deployment}
+\lstinputlisting[style=mermaid]{diagrams/09-scaled-deployment.mmd}
 }{%
 The rendered images are not present in this build, so each diagram's Mermaid source is printed inline where the diagram is referenced. Run \code{render.sh} to embed images and move the sources here.
 }

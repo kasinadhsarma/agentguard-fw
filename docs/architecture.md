@@ -344,3 +344,29 @@ sequenceDiagram
         G-->>M: result
     end
 ```
+
+## Scaled deployment
+
+Stateless pods share one Redis for sessions, rate limits and metrics. Each pod keeps its own audit chain.
+
+```mermaid
+flowchart TB
+    caller["Integrator code (agent framework)"] -->|"HTTPS + API key"| svc["Load balancer / Kubernetes Service"]
+    prom["Prometheus"] -->|"/metrics"| svc
+
+    svc --> p1["AgentGuard pod 1<br/>N workers"]
+    svc --> p2["AgentGuard pod 2<br/>N workers"]
+    svc --> p3["AgentGuard pod N<br/>N workers"]
+
+    p1 --> redis[("Redis<br/>session items and events, rate-limit buckets, metrics<br/>if unreachable: every call answers 503")]
+    p2 --> redis
+    p3 --> redis
+
+    p1 -.-> judge["Meta Model API judge<br/>pooled client, verdict cache, circuit breaker"]
+    p2 -.-> judge
+    p3 -.-> judge
+
+    p1 --> a1[("audit-pod1.jsonl<br/>own hash chain")]
+    p2 --> a2[("audit-pod2.jsonl")]
+    p3 --> a3[("audit-podN.jsonl")]
+```

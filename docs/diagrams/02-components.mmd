@@ -1,0 +1,47 @@
+flowchart TB
+    subgraph Clients["Clients"]
+        AG["Agent framework"]
+        AD["adapters: ToolGuard, OpenAI, Anthropic, LangChain"]
+        DEMO["demo: SimAgent, LiveAgent, CLI, Streamlit"]
+        BEN["bench: corpus and runner"]
+    end
+
+    subgraph API["agentguard.proxy (FastAPI)"]
+        MW["Method filter, API key check, rate limit"]
+        EP["Endpoints: sessions, ingest, model-output, authorize, audit, tools, health"]
+    end
+
+    subgraph Core["agentguard core"]
+        FW["firewall.Firewall: sessions with idle expiry"]
+        DET["detector: regex rules and zero-width check"]
+        NRM["normalize: decoded readings of a text"]
+        JDG["judge.MetaJudge (optional)"]
+        TNT["taint.TaintTracker"]
+        POL["policy.PolicyEngine: rules R1 to R5"]
+        SCH["tool_schema: profiles and validation"]
+        AUD["audit_store: hash-chained log"]
+        RL["ratelimit and settings"]
+        MOD["models"]
+    end
+
+    EXT["Meta Model API at api.meta.ai/v1"]
+    LOG[("audit.jsonl")]
+
+    AG -->|"HTTP"| MW
+    MW --> EP
+    MW --> RL
+    EP --> FW
+    AD -->|"in-process calls"| FW
+    DEMO --> AD
+    BEN --> FW
+    FW --> DET
+    FW --> JDG
+    JDG -->|"POST /responses"| EXT
+    FW --> TNT
+    FW --> POL
+    FW --> AUD
+    AUD --> LOG
+    TNT --> NRM
+    POL --> TNT
+    POL --> SCH
+    FW --> MOD

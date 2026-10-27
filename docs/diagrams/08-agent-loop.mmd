@@ -1,0 +1,22 @@
+sequenceDiagram
+    participant M as Model
+    participant G as ToolGuard
+    participant F as Firewall
+    participant T as Tool
+
+    M->>G: assistant text
+    G->>F: record_model_output(text)
+    M->>G: tool call (name, args)
+    G->>F: authorize(name, args)
+    alt BLOCK
+        F-->>G: BLOCK (rule, reason)
+        G-->>M: refusal text, the tool never runs
+    else CONFIRM and the user declines
+        F-->>G: CONFIRM (rule, reason)
+        G-->>M: not run, the user did not approve
+    else ALLOW, or CONFIRM approved
+        G->>T: run(args)
+        T-->>G: result
+        G->>F: ingest(result, source tool:name)
+        G-->>M: result
+    end

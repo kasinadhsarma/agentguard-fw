@@ -1,0 +1,23 @@
+flowchart TD
+    S(["authorize(tool, args)"]) --> P["Look up tool profile (unknown tool = side-effect)"]
+    P --> Q["Find target arguments and split them into user-authorized and not"]
+    Q --> D1{"Risky tool and a target named only by untrusted content?"}
+    D1 -->|"yes"| B1["BLOCK  R1"]
+    D1 -->|"no"| D2{"Payload copies sensitive data to an unauthorized or unnamed target?"}
+    D2 -->|"yes"| B2["BLOCK  R2"]
+    D2 -->|"no"| D2b{"Arguments violate the declared schema?"}
+    D2b -->|"yes"| B5["BLOCK  R5"]
+    D2b -->|"no"| D3{"Risky tool and an unauthorized target?"}
+    D3 -->|"yes"| C3["CONFIRM  R3"]
+    D3 -->|"no"| D4{"Tool missing from the policy, or generated profile without a target?"}
+    D4 -->|"yes"| C3b["CONFIRM  R3"]
+    D4 -->|"no"| D5{"Risky tool and max injection score at or above 0.5?"}
+    D5 -->|"yes"| C4["CONFIRM  R4"]
+    D5 -->|"no"| A0["ALLOW  R0"]
+
+    classDef deny fill:#fde2e2,stroke:#c0392b
+    classDef ask fill:#fff3cd,stroke:#b9770e
+    classDef ok fill:#d5f5e3,stroke:#1e8449
+    class B1,B2,B5 deny
+    class C3,C3b,C4 ask
+    class A0 ok

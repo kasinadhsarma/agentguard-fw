@@ -1,0 +1,111 @@
+classDiagram
+    class Trust {
+        <<enumeration>>
+        TRUSTED
+        UNTRUSTED
+    }
+    class Verdict {
+        <<enumeration>>
+        ALLOW
+        CONFIRM
+        BLOCK
+    }
+    class ToolRisk {
+        <<enumeration>>
+        READ
+        SENSITIVE_READ
+        SIDE_EFFECT
+    }
+    class Finding {
+        +str rule_id
+        +str description
+        +float weight
+        +str excerpt
+    }
+    class ContentItem {
+        +int item_id
+        +str text
+        +str source
+        +Trust trust
+        +float injection_score
+        +list~Finding~ findings
+        +bool sensitive
+        +list~int~ derived_from
+    }
+    class Decision {
+        +Verdict verdict
+        +str rule_id
+        +str reason
+        +str tool
+        +dict args
+        +list~str~ evidence
+    }
+    class AuditEvent {
+        +float timestamp
+        +str kind
+        +str summary
+        +dict detail
+    }
+    class ToolProfile {
+        +ToolRisk risk
+        +tuple target_args
+    }
+    class TaintTracker {
+        +list~ContentItem~ items
+        +is_user_authorized(value) bool
+        +untrusted_origin(value) ContentItem
+        +origins_of(text) list
+        +exfiltrated_span(args) tuple
+        +max_injection_score() float
+    }
+    class PolicyEngine {
+        +evaluate(tool, args, tracker) Decision
+    }
+    class Session {
+        +str session_id
+        +TaintTracker tracker
+        +list~AuditEvent~ events
+        +list~Decision~ decisions
+    }
+    class Firewall {
+        +new_session(prompt) str
+        +ingest(session_id, text, source) ContentItem
+        +authorize(session_id, tool, args) Decision
+        +record_model_output(session_id, text) ModelOutputResult
+        +audit(session_id) list
+        +purge_expired() int
+    }
+    class AuditStore {
+        +append(session_id, event) dict
+        +verify(expected_head) VerifyResult
+        +export(session_id) list
+        +str head
+    }
+    class ToolSpec {
+        +str name
+        +dict parameters
+    }
+    class ToolGuard {
+        +permit(tool, args)
+        +run(tool, args, fn) any
+        +protect(fn) callable
+        +observe(tool, result)
+        +model_said(text)
+    }
+
+    ContentItem --> Trust
+    ContentItem "1" o-- "*" Finding
+    Decision --> Verdict
+    ToolProfile --> ToolRisk
+    TaintTracker "1" o-- "*" ContentItem
+    Session *-- TaintTracker
+    Session o-- AuditEvent
+    Session o-- Decision
+    Firewall "1" o-- "*" Session
+    Firewall --> PolicyEngine
+    PolicyEngine ..> TaintTracker : reads
+    PolicyEngine ..> ToolProfile : looks up
+    PolicyEngine ..> Decision : returns
+    PolicyEngine ..> ToolSpec : validates calls against
+    Firewall o-- AuditStore
+    ToolGuard --> Firewall : wraps

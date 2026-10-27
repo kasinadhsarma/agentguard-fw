@@ -1,0 +1,30 @@
+sequenceDiagram
+    autonumber
+    actor U as User
+    participant A as Agent
+    participant FW as AgentGuard
+    participant T as Tools
+    participant J as Meta Model API
+
+    U->>A: Summarize the page and email it to boss@acme.test
+    A->>FW: new_session(request), source user, trusted
+    A->>FW: authorize(fetch_page, report URL)
+    FW-->>A: ALLOW (R0)
+    A->>T: fetch_page(report URL)
+    T-->>A: page text with a hidden instruction
+    A->>FW: ingest(page, source tool:fetch_page)
+    FW->>FW: detector.scan gives score and findings
+    opt LLM judge enabled
+        FW->>J: POST /responses with the untrusted text
+        J-->>FW: JSON verdict (injection, confidence)
+    end
+    FW-->>A: item labeled untrusted, injection score
+    A->>FW: authorize(read_file, ~/.ssh/id_rsa)
+    FW-->>A: BLOCK (R1, path only named by the page)
+    A->>FW: authorize(send_email, attacker@evil.test)
+    FW-->>A: BLOCK (R1, address only named by the page)
+    A->>FW: authorize(send_email, boss@acme.test)
+    FW-->>A: CONFIRM (R4, context looks poisoned)
+    A->>U: Approve sending the summary to boss@acme.test?
+    U-->>A: Approved
+    A->>T: send_email(boss@acme.test, summary)

@@ -1,0 +1,14 @@
+flowchart LR
+    A1["Attacker plants text in a page"] --> A2["Agent fetches the page"]
+    A2 --> A3["Model follows the hidden instruction"]
+    A3 --> A4["Tool call aimed at an attacker target"]
+    A4 --> A5["Data leaves the machine"]
+
+    D1["Detector and LLM judge raise suspicion"] -.->|"cuts here"| A2
+    D2["Taint tracking and rules R1, R2 block the call"] -.->|"cuts here"| A4
+    D3["Rules R3, R4 ask a human"] -.->|"cuts here"| A4
+
+    classDef atk fill:#fde2e2,stroke:#c0392b
+    classDef def fill:#e8f0fe,stroke:#1a56c4
+    class A1,A2,A3,A4,A5 atk
+    class D1,D2,D3 def

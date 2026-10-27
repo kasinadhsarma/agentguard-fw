@@ -1,0 +1,7 @@
+fastapi>=0.110
+uvicorn>=0.29
+httpx>=0.27
+pydantic>=2.6
+streamlit>=1.30
+pytest>=8.0
+langchain-core>=0.3   # optional: only for the LangChain adapter and its test

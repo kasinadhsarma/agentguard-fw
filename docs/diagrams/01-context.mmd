@@ -1,0 +1,18 @@
+flowchart LR
+    U["User"]
+    W["Web pages, files, email, tool output"]
+    A["AI agent (LLM)"]
+    FW["AgentGuard firewall"]
+    T["Tools: fetch_page, read_file, send_email, http_post, ..."]
+
+    U -->|"trusted request"| FW
+    W -->|"untrusted content"| FW
+    FW -->|"content labeled trusted or untrusted"| A
+    A -->|"proposed tool call"| FW
+    FW -->|"allow"| T
+    FW -->|"confirm"| U
+    FW -.->|"block"| A
+    T -->|"results (untrusted)"| FW
+
+    classDef guard fill:#e8f0fe,stroke:#1a56c4,stroke-width:2px
+    class FW guard

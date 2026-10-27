@@ -1,0 +1,21 @@
+flowchart LR
+    subgraph Host["Agent host"]
+        AG["Agent runtime (LLM and tool loop)"]
+        LIB["Option A: ToolGuard or Firewall in-process"]
+    end
+
+    subgraph Svc["Option B: AgentGuard service"]
+        UV["uvicorn agentguard.proxy:app with API key and rate limit"]
+        FWS["Firewall and sessions in memory, idle expiry"]
+        LOG[("hash-chained audit file")]
+    end
+
+    EXT["Meta Model API, key from MODEL_API_KEY"]
+    TOOLS["Real tools: browser, mail, filesystem"]
+
+    AG -->|"direct calls"| LIB
+    AG -->|"HTTP GET and POST"| UV
+    UV --> FWS
+    FWS --> LOG
+    FWS -->|"only untrusted, non-sensitive content"| EXT
+    AG -->|"after allow or approved confirm"| TOOLS

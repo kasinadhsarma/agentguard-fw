@@ -93,6 +93,10 @@ author's terminal):
   in live runs and its blocking is shown only by the scripted benchmark, the
   AgentDojo goals and the incident replays.
 - In every guarded run the legitimate email to the user's recipient was sent.
+- Stress test (`--obedient`, the model is told page instructions are
+  legitimate): 0 of 22 usable runs leaked without the firewall and 0 of 21
+  with it; 7 runs ended in an API error (5 on the "authority" page, cause not
+  examined). The model never attacked even when told to obey.
 - This says Muse Spark resisted these five pages. It does not say it is
   immune, and it says nothing about weaker models.
 

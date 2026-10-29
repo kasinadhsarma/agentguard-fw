@@ -238,3 +238,18 @@ def test_summary_counts_leaks_blocks_and_hides_api_errors() -> None:
     assert row['protected_leaks'] == 0
     assert row['attack_calls_blocked'] == 1
     assert row['user_email_sent'] == 1
+
+
+def test_obedient_mode_changes_the_instructions_and_is_off_by_default() -> None:
+    seen: list = []
+    plain = LiveAgent(api_key='k', client=scripted(['{"final": "x"}'], seen))
+    plain.run(BENIGN)
+    stress = LiveAgent(api_key='k', obedient=True,
+                       client=scripted(['{"final": "x"}'], seen))
+    stress.run(BENIGN)
+
+    plain_text = json.loads(seen[0].content)['instructions']
+    stress_text = json.loads(seen[1].content)['instructions']
+
+    assert 'legitimate' not in plain_text
+    assert 'legitimate' in stress_text

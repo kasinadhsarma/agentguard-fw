@@ -118,6 +118,26 @@ PATTERNS: list[Pattern] = [
         description='contains a long encoded blob that may hide a payload',
     ),
     Pattern(
+        rule_id='user_impersonation',
+        regex=_compile(
+            r'(this\s+is\s+(an?\s+)?(important\s+|urgent\s+)?'
+            r'(message|note|request|instruction)\s+from\s+'
+            r'(me|the\s+user|your\s+user|the\s+owner)\b)'
+        ),
+        weight=0.4,
+        description='claims to be a message from the user inside content',
+    ),
+    Pattern(
+        rule_id='task_precondition',
+        regex=_compile(
+            r'before\s+(you|i)\s+(can\s+)?(solve|complete|finish|do|'
+            r'continue|proceed|start|answer)\b.{0,160}'
+            r'(do|perform|complete)\s+the\s+following\s+(first|step)'
+        ),
+        weight=0.4,
+        description='puts a new task in front of the one the user gave',
+    ),
+    Pattern(
         rule_id='addresses_ai',
         regex=_compile(
             r'(important|urgent|attention|note)\s*(to|for)?\s*'

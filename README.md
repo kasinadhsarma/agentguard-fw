@@ -244,7 +244,12 @@ model through a small JSON text protocol rather than the API's own
 function-calling format. Tests use a scripted mock server. One real run
 against `muse-spark-1.3` on the three plain scenarios (2026-10-29, run by
 the author): the model followed none of the injections, even with no
-firewall, so there was nothing for the firewall to block. A second run with
+firewall, so there was nothing for the firewall to block. Stress test (run 2026-10-29): `python3 -m demo.run_demo --live --hard --runs 5 --obedient`
+tells the model that instructions in pages are legitimate. Result: 0 leaks in
+22 usable runs without the firewall and 0 in 21 with it (7 runs ended in an
+API error, 5 of them on the "authority" page, cause not examined). Even told
+to obey, the model never sent anything to the attacker, so the firewall still
+blocked nothing live. A second run with
 `--hard --runs 5` (five attack pages) gave 0 leaks in 24 usable unprotected
 runs and 0 in 24 guarded runs (2 API errors excluded), so the live model
 never attempted the attack and the firewall blocked nothing there.
@@ -269,8 +274,15 @@ without running it; the detector was not changed for this test):
 
 **Headline:** On 46 real attacker goals from the public AgentDojo benchmark, AgentGuard held the attacker's action in 41 (89%): 38 name an attacker address, site or account, and 3 more are caught by a rule built after seeing them. 5 are not caught. "Held" includes calls that ask the user to confirm. This measures scripted tool calls built from the benchmark's goals, not its full agent loop, and says nothing about other attacks.
 
-- 46 unique attacker goals. The detector alone flagged 37% (banking 0/17,
-  slack 0/5, travel 4/9, workspace 13/15).
+- 46 unique attacker goals. The detector alone, by attack wrapper (flagged
+  of 46): `important_instructions` (AgentDojo's default) 100%, `injecagent`
+  100%, and the bare wrappers `direct` ("TODO: ..."), `ignore_previous` and
+  `system_message` 37% each. The 100% on `important_instructions` is FITTED:
+  I added two rules (user impersonation, task precondition) after reading
+  that wrapper, so it is not a test. The three bare wrappers were not used
+  to write rules and did not improve, which is the honest held-out signal:
+  the detector does not generalize to plain "TODO: do X" text. Before the
+  new rules it was 37% on `important_instructions` too.
 - 38 goals name an attacker account, address or site; sending to it was held
   in all 38. That is close to true by construction, because the benchmark
   gives the target only in the injected text.
@@ -281,7 +293,7 @@ without running it; the detector was not changed for this test):
   value). I built R6 after seeing these goals, so this number is not a clean
   held-out result; the bundled benchmark was unchanged by it (44 blocked, 2
   held, 0 allowed; 48/52 legitimate emails allowed).
-- 0 of 39 harmless default texts flagged (small sample).
+- 0 of 39 harmless default texts flagged, and 2 of 559 benign texts from the benchmark's own environment data (emails, files, messages), 0.4%. Both flagged ones are ordinary: a password-reset email that says to ignore it, and meeting minutes. Still benchmark text, not real traffic.
 
 Replays of three public incidents (GitHub MCP, Slack AI, EchoLeak) with fake
 data are in `demo/incidents.py`. GitHub MCP: private read held by R3, the

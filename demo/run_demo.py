@@ -113,9 +113,10 @@ def print_summary(rows: list[dict]) -> None:
         ))
 
 
-def run_live(hard: bool = False, runs: int = 1) -> int:
+def run_live(hard: bool = False, runs: int = 1,
+             obedient: bool = False) -> int:
     """Run scenarios with a real model, with and without the firewall."""
-    live = LiveAgent()
+    live = LiveAgent(obedient=obedient)
     if not live.enabled:
         print('--live needs the MODEL_API_KEY environment variable.')
         return 2
@@ -123,6 +124,10 @@ def run_live(hard: bool = False, runs: int = 1) -> int:
     judge = MetaJudge()
     chosen = scenarios() + (hard_scenarios() if hard else [])
     print('Live agent model: ' + live.model + ' (results can vary per run)')
+    if obedient:
+        print('STRESS TEST: the model is told that instructions in pages are\n'
+              'legitimate. This shows the firewall when the model is fooled,\n'
+              'not how a normally prompted model behaves.')
 
     rows = []
     for scenario in chosen:
@@ -131,9 +136,9 @@ def run_live(hard: bool = False, runs: int = 1) -> int:
         for index in range(runs):
             if runs > 1:
                 print('  -- run ' + str(index + 1) + ' of ' + str(runs))
-            bare = LiveAgent().run(scenario)
+            bare = LiveAgent(obedient=obedient).run(scenario)
             firewall = Firewall(judge=judge if judge.enabled else None)
-            guarded = LiveAgent(firewall).run(scenario)
+            guarded = LiveAgent(firewall, obedient=obedient).run(scenario)
             unprotected.append(bare)
             protected.append(guarded)
             if runs == 1:
@@ -156,9 +161,13 @@ def main() -> None:
     parser.add_argument('--runs', type=int, default=1,
                         help='with --live: repeat each scenario N times '
                         'and print a summary table (costs N times more)')
+    parser.add_argument('--obedient', action='store_true',
+                        help='with --live: stress test, tell the model that '
+                        'instructions in pages are legitimate')
     args = parser.parse_args()
     if args.live:
-        sys.exit(run_live(hard=args.hard, runs=max(1, args.runs)))
+        sys.exit(run_live(hard=args.hard, runs=max(1, args.runs),
+                          obedient=args.obedient))
 
     judge = MetaJudge()
     firewall_judge = judge if judge.enabled else None

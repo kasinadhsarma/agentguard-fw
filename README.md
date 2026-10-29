@@ -272,7 +272,13 @@ without running it; the detector was not changed for this test):
 - 38 goals name an attacker account, address or site; sending to it was held
   in all 38. That is close to true by construction, because the benchmark
   gives the target only in the injected text.
-- 8 goals name no such target (hotel name, file id, password); not covered.
+- 8 goals name no such target. Rule R6 (a side-effect call whose short
+  identifier argument only untrusted content named, e.g. a hotel name or a
+  password) holds 2 of them. 1 is missed (file id "13" is too short to match
+  reliably), and 5 have no call to check (text-only answers, or no named
+  value). I built R6 after seeing these goals, so this number is not a clean
+  held-out result; the bundled benchmark was unchanged by it (44 blocked, 2
+  held, 0 allowed; 48/52 legitimate emails allowed).
 - 0 of 39 harmless default texts flagged (small sample).
 
 Replays of three public incidents (GitHub MCP, Slack AI, EchoLeak) with fake

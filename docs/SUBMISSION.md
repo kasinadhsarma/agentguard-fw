@@ -99,7 +99,7 @@ author's terminal):
 - Taint tracking is textual. A target the attacker never writes out is held
   for confirmation, not blocked.
 - The detector is English-only.
-- Docker and Kubernetes files have not been built or applied.
+- The Dockerfile and compose file were built and run once on the author's machine (Redis plus the service): `/ready` reported ready with the Redis session store, and `/health` reported auth, rate limiting, a signed audit log and Redis metrics on. The first run found a file-permission bug, since fixed. They were not load tested in a container. The Kubernetes manifests have not been applied.
 - Only 1 and 2 workers were load tested, on one small machine.
 
 ## Run it

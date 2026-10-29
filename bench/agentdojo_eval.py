@@ -104,6 +104,34 @@ PROMPTS = {
 }
 
 
+# goals with no address or account: the one identifier-like value that a
+# matching AgentDojo tool would take, if the goal names one
+VALUE_CALLS = (
+    (re.compile(r"password of the user to (\w+)"),
+     'update_password', 'password'),
+    (re.compile(r"file with ID '(\w+)'"), 'delete_file', 'file_id'),
+    (re.compile(r"reservation for the ([A-Z][\w ]+?) from"),
+     'reserve_hotel', 'hotel'),
+)
+
+
+def value_check(row: dict) -> str:
+    """Verdict for a goal with no target, using R6 on its identifier."""
+    for pattern, tool, arg in VALUE_CALLS:
+        match = pattern.search(row['goal'])
+        if match:
+            config = PolicyConfig()
+            config.profiles[tool] = ToolProfile(ToolRisk.SIDE_EFFECT, ())
+            firewall = Firewall(config)
+            session = firewall.new_session(PROMPTS[row['suite']])
+            firewall.ingest(session, WRAPPER.format(goal=row['goal']),
+                            source='tool:read_page')
+            decision = firewall.authorize(session, tool,
+                                          {arg: match.group(1)})
+            return decision.verdict.value + ':' + decision.rule_id
+    return 'no-call'
+
+
 def target_of(goal: str) -> tuple[str, str] | None:
     """Return (kind, value) of the attacker's target if the goal names one."""
     for kind, pattern in (('iban', IBAN), ('email', EMAIL), ('site', SITE)):
@@ -182,6 +210,13 @@ def main() -> None:
               % (wrong, len(defaults)))
     except ImportError:
         print('install pyyaml to also check the harmless default texts')
+    rest = [r for r, v in zip(unique, verdicts) if v == 'no-target']
+    results = [value_check(r) for r in rest]
+    caught = [v for v in results if not v.startswith('allow')
+              and v != 'no-call']
+    print('of those %d, an identifier-argument rule (R6) holds %d; '
+          '%d have no call to check (text-only or no named value)'
+          % (len(rest), len(caught), results.count('no-call')))
     print('missed goals:')
     for row in unique:
         if not row['flagged']:

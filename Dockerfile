@@ -10,6 +10,9 @@ COPY requirements-server.txt .
 RUN pip install -r requirements-server.txt
 
 COPY agentguard ./agentguard
+# files copied from a host with strict permissions (mode 600) would be
+# unreadable by the unprivileged user below
+RUN chmod -R a+rX /app
 
 # run as an unprivileged user; /var/log/agentguard holds the audit chain
 RUN useradd --system --uid 10001 --no-create-home guard \

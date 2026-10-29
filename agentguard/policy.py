@@ -213,6 +213,42 @@ class PolicyEngine:
                     evidence=problems[:5],
                 )
 
+        # R3 hardened: a made-up target while the context looks poisoned is
+        # blocked, not asked about, so a habit "yes" cannot let it through
+        if (
+            risky and unauthorized
+            and tracker.max_injection_score()
+            >= self.config.suspicious_threshold
+        ):
+            return Decision(
+                verdict=Verdict.BLOCK,
+                rule_id='R3',
+                reason=(
+                    'target "' + unauthorized[0] + '" was not named by the '
+                    'user and the context contains a likely injection '
+                    '(score ' + format(tracker.max_injection_score(), '.2f')
+                    + ')'
+                ),
+                tool=tool,
+                args=arguments,
+            )
+
+        # R6: a side-effect call whose short identifier argument (a file
+        # id, a name, a password) was named only by untrusted content
+        if profile.risk == ToolRisk.SIDE_EFFECT:
+            odd = untrusted_only_value(arguments, profile, tracker)
+            if odd is not None:
+                return Decision(
+                    verdict=Verdict.CONFIRM,
+                    rule_id='R6',
+                    reason=(
+                        'argument value "' + odd + '" appears only in '
+                        'untrusted content, not in the user\'s request'
+                    ),
+                    tool=tool,
+                    args=arguments,
+                )
+
         # R3: target the agent made up, on a risky tool
         if risky and unauthorized:
             return Decision(
@@ -275,6 +311,42 @@ class PolicyEngine:
             tool=tool,
             args=arguments,
         )
+
+
+# argument names that carry free text the agent writes itself; copying
+# page text into them is normal (a summary), so R6 ignores them
+FREE_TEXT_ARGS = frozenset({
+    'body', 'content', 'text', 'message', 'subject', 'description',
+    'summary', 'note', 'notes', 'comment', 'title', 'reason', 'caption',
+})
+R6_MAX_LENGTH = 80
+R6_MIN_LENGTH = 4
+
+
+def untrusted_only_value(
+    arguments: dict,
+    profile: ToolProfile,
+    tracker: TaintTracker,
+) -> str | None:
+    """Return a short argument value that only untrusted content named.
+
+    Target arguments are handled by R1 and R3, and free-text arguments are
+    skipped. Values shorter than a few characters are skipped because they
+    match by chance (the id "13" appears in any page).
+    """
+    for name, raw in arguments.items():
+        if name in profile.target_args or name.lower() in FREE_TEXT_ARGS:
+            continue
+        if not isinstance(raw, str):
+            continue
+        value = raw.strip()
+        if not R6_MIN_LENGTH <= len(value) <= R6_MAX_LENGTH:
+            continue
+        if tracker.is_user_authorized(value):
+            continue
+        if tracker.untrusted_origin(value) is not None:
+            return value
+    return None
 
 
 def _preview(text: str, needle: str, radius: int = 60) -> str:

@@ -54,6 +54,11 @@ context), R0 allow.
   and LangChain; HTTP service with API keys, rate limits, a hash-chained
   audit log, Prometheus metrics, Dockerfile and Kubernetes manifests.
 
+## Links
+
+- Code: https://github.com/kasinadhsarma/agentguard-fw
+- Live demo (simulated agent, no API key): https://agentguard-fw.vercel.app
+
 ## Live results with the Meta Model API
 
 One real run on 2026-10-29 (`python3 -m demo.run_demo --live`, model

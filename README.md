@@ -251,6 +251,8 @@ never attempted the attack and the firewall blocked nothing there.
 
 ## Web interface
 
+Live demo: https://agentguard-fw.vercel.app (simulated agent, fake secrets, no API key).
+
     python3 -m demo.web      # open http://127.0.0.1:8000
 
 Pick a scenario or paste your own page text. The simulated agent runs twice,

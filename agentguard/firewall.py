@@ -10,6 +10,7 @@ from typing import Any, Callable
 from . import detector
 from .audit_store import AuditStore
 from .judge import MetaJudge
+from .output_check import OutputCheck, check_text
 from .models import (
     TRUSTED_SOURCES,
     AuditEvent,
@@ -258,6 +259,27 @@ class Firewall:
             item=item,
             origins=item.derived_from,
         )
+
+    def check_output(self, session_id: str, text: str) -> OutputCheck:
+        """Check the answer shown to the user for data-leaking addresses.
+
+        Catches attacks that leak through a rendered image or link and
+        call no tool. See output_check.py for the rules and limits.
+        """
+        session = self.get(session_id)
+        result = check_text(text, session.tracker)
+        event = self._event(
+            session_id,
+            kind='output_check',
+            summary=result.verdict.upper() + ' answer: ' + (
+                '; '.join(f.rule_id + ' ' + f.reason for f in result.findings)
+                or 'no outbound references'
+            ),
+            detail={'verdict': result.verdict,
+                    'findings': [f.__dict__ for f in result.findings]},
+        )
+        self.store.append_event(session_id, event)
+        return result
 
     def audit(self, session_id: str) -> list[AuditEvent]:
         """Return the full audit trail of a session."""

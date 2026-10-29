@@ -71,6 +71,14 @@ class IngestRequest(BaseModel):
     sensitive: bool | None = None
 
 
+class CheckOutputRequest(BaseModel):
+    """Body for checking the final answer before it is shown."""
+
+    model_config = ConfigDict(extra='forbid')
+
+    text: str = Field(max_length=200_000)
+
+
 class ModelOutputRequest(BaseModel):
     """Body for recording text the model produced."""
 
@@ -354,6 +362,20 @@ def create_app(
                 }
                 for finding in item.findings
             ],
+        }
+
+    @app.post('/sessions/{session_id}/check-output')
+    def check_output(
+        session_id: str,
+        body: CheckOutputRequest,
+    ) -> dict[str, Any]:
+        """Check an answer for links or images that leak data."""
+        with _session_scope():
+            result = guard.check_output(session_id, body.text)
+        return {
+            'verdict': result.verdict,
+            'safe_text': result.safe_text,
+            'findings': [f.__dict__ for f in result.findings],
         }
 
     @app.post('/sessions/{session_id}/model-output')

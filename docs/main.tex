@@ -775,7 +775,7 @@ PolicyConfig(suspicious\_threshold=...) & Score at which R4 asks for confirmatio
 \subsection{Running}
 \begin{lstlisting}[language=bash]
 pip install -r requirements.txt
-python -m pytest                 # 176 tests
+python -m pytest                 # 177 tests
 python -m demo.run_demo          # terminal demo (simulated agent)
 python -m demo.run_demo --live   # real model as the agent (needs MODEL_API_KEY)
 python -m bench.run_bench        # benchmark on the bundled corpus
@@ -825,11 +825,11 @@ test\_audit\_store.py & 10 & Chain, edit, deletion, truncation with an anchor, H
 test\_proxy\_security.py & 17 & 401, key styles, open health, 405 before auth, 429 and Retry-After, failed-login limit, expiry, new endpoints, settings. \\
 test\_ratelimit\_ttl.py & 7 & Burst, refill, separate buckets, session expiry and purge. \\
 test\_adapters.py & 11 & Plain functions, async, OpenAI and Anthropic styles, sensitive results, real LangChain tools. \\
-test\_live\_agent.py & 10 & Scripted model: obedient with and without the firewall, refusals seen by the model, parsing, failures. \\
+test\_live\_agent.py & 11 & Scripted model: obedient with and without the firewall, refusals seen by the model, parsing, failures. \\
 test\_scale.py & 37 & Sessions shared between workers over a real Redis, TTL and renewal, no resurrection, item limit, round-trip count, 503 when Redis is down, shared rate limit, metrics (render, flush, shutdown), six processes on one audit chain, judge cache and circuit breaker, settings. \\
 test\_bench.py & 3 & Corpus shape; regression guards on attacks allowed and on benign friction. \\
 \midrule
-\textbf{Total} & \textbf{176} & \\
+\textbf{Total} & \textbf{177} & \\
 \bottomrule
 \end{tabularx}
 \caption{Automated tests. The judge and live-agent tests use a mocked HTTP transport and make no network calls. The LangChain test is skipped if \code{langchain-core} is not installed, and 18 tests in test\_scale.py are skipped when no \code{redis-server} binary is on the path.}
@@ -888,7 +888,7 @@ unicode & 3/3 & 3/3 \\
 \end{itemize}
 
 \subsection{What has and has not been measured}
-The scenario and benchmark results show that the rules behave as designed on text the authors wrote. They do not measure detection against real, adaptive attackers or on a public dataset. The Meta judge and the live agent have been tested only against a mocked server, never the real API. No false-positive rate has been measured on real agent traffic. The LangChain adapter was tested against real \code{langchain-core}; the OpenAI and Anthropic adapters against hand-built messages in those formats, not against the vendors' SDKs.
+The scenario and benchmark results show that the rules behave as designed on text the authors wrote. They do not measure detection against real, adaptive attackers or on a public dataset. The live agent was run once against the real API on three plain scenarios; the model followed no injection, so that run does not show the firewall blocking an attack, and the judge's own verdicts were not separately checked. No false-positive rate has been measured on real agent traffic. The LangChain adapter was tested against real \code{langchain-core}; the OpenAI and Anthropic adapters against hand-built messages in those formats, not against the vendors' SDKs.
 
 % ================================================================ scale
 \section{Scaling out}\label{sec:scale}
@@ -937,6 +937,35 @@ How to read this:
 Redis Cluster (key names are cluster-safe but this was never tested, and the metrics hash is a single hot key); a Redis with replication and failover; a single audit chain across pods; a load test from a separate machine; a test at more than two workers.
 
 % ================================================================ 9
+\section{Related work and public attacks}\label{sec:related}
+
+\subsection{Related defenses}
+The idea of tracking where an instruction came from, and refusing actions that only untrusted content asked for, is not new. CaMeL (Debenedetti et al., Google DeepMind and ETH Zurich, 2025) goes further than this project: a privileged model writes a plan from the trusted request only, a quarantined model reads untrusted data, and an interpreter tracks provenance and enforces policies. The authors report 77\% of AgentDojo tasks solved with provable security against 84\% undefended, at about 2.8 times the input tokens, with policies that must be written and maintained. AgentGuard is much weaker by design: it does not control the plan, it checks each tool call afterwards with textual taint rules and a regex detector. In exchange it needs no change to the agent, works with any model, and is small enough to read. Meta's LlamaFirewall and the ``spotlighting'' technique are other published approaches in the same area; we did not compare against them.
+
+\subsection{The answer check}
+\code{Firewall.check\_output} (HTTP: \code{POST /sessions/\{id\}/check-output}) inspects the text shown to the user. Rule O1 blocks a markdown or HTML image whose host only untrusted content named, because an image loads without a click. Rule O2 blocks any address to a host the user did not name that carries sensitive content: a long span copied from a sensitive item, or a token of at least eight letters and digits found after percent-decoding. A link to an untrusted-only host with no data in it is only reported. Blocked addresses are replaced by a marker in the returned safe text. Limits: it knows a secret only if it was ingested as sensitive; a secret split or re-encoded beyond the readings in \code{normalize.py} can slip through; it does not see content a client renders that the text does not show.
+
+\subsection{Documented incidents}
+Three public incidents show the shape of the problem. We did not run the affected products. We replayed the published attack shape as scripted tool calls with fake data and our own paraphrased injection text (\code{demo/incidents.py}); the result only says what AgentGuard would decide at each step, not that the product would have been safe.
+\begin{itemize}
+  \item \textbf{GitHub MCP, May 2025} (Invariant Labs). A malicious issue in a public repository made an agent read the owner's private repositories and publish them in a pull request on the public one. Replay result: the pull request goes to the repository the user named, so no target rule fires on it. Reading the private repository was held by rule R3, because the user never named it. If the user approves that prompt out of habit, the leak goes through.
+  \item \textbf{Slack AI, August 2024} (PromptArmor). A message in a public channel made the assistant show a link carrying a secret in its address. No tool ran; the user's click sent the secret. Tool-call rules cannot see this. The answer check (Section~\ref{sec:related}, rules O1 and O2) reads the final answer, finds an address to a host the user never named that carries the secret, blocks it and removes it from the text. This works only if the answer passes through the check before it is shown.
+  \item \textbf{EchoLeak, CVE-2025-32711, 2025} (Microsoft 365 Copilot). An email made the assistant place private data in an image address that the client fetched by itself. Replay result: the image address carries the secret, so rule O2 blocks it (rule O1 would also block an image from a host only untrusted content named). The same limit applies: a client that renders text that never went through the check is not protected.
+\end{itemize}
+
+\subsection{Measured on a public benchmark}
+AgentDojo (Debenedetti et al., 2024) is a public benchmark of agent tasks with attacker goals. We read its attacker goals directly from the published package source, without running its code (\code{bench/agentdojo\_eval.py}), and wrapped each in the benchmark's standard ``important instructions'' text. We did not change the detector for this test. Of 46 unique attacker goals:
+\begin{itemize}
+  \item The detector alone flagged 17 (37\%): banking 0 of 17, Slack 0 of 5, travel 4 of 9, workspace 13 of 15. It missed even the standard wrapper in banking and Slack. Detector score alone is weak against this benchmark.
+  \item 38 goals name an attacker account, address or site. In every one of those, sending data to the named target was held by the firewall. This is close to true by construction: AgentDojo gives the attacker's target only in the injected text, which is exactly what rule R1 looks for. It would not hold for an attack that uses a target the user also mentioned.
+  \item 8 goals name no such target (a hotel name, a file identifier, a password change, a reservation). The target rules do not cover these.
+  \item 0 of 39 of the benchmark's harmless default texts were flagged. This is a small, short sample, not a false-positive rate for real traffic.
+\end{itemize}
+This measures detection and the target rules, not an end-to-end attack success rate. We did not run AgentDojo's full agent loop with a real model.
+
+\subsection{Live model}
+One real run against the Meta model on three plain scenarios found that the model followed none of the injections, so that run does not show the firewall stopping a model. A second run used three harder pages (claimed authority, an imitated conversation, ready-made tool calls) and five runs per page (\code{--hard --runs 5}). Without the firewall the model leaked in 0 of 24 usable attack runs, and in 0 of 24 with it (two runs ended in an API error and are excluded). With 0 of 24 the leak rate could still be about 12\% (rule of three). The model never attempted the attacker's call, so the firewall blocked nothing in live runs; its blocking is shown only by the scripted benchmark, the AgentDojo goals and the incident replays. This shows that this model resisted these pages, not that it is immune.
+
 \section{Security analysis and limitations}
 
 \begin{table}[H]
@@ -967,7 +996,7 @@ Confirmation fatigue & Too many R3 or R4 prompts teach users to click through. &
 \section{Future work}
 The items planned for versions 0.2 to 0.5 (decoded targets, taint through model output, a benchmark, authentication, rate limiting, session expiry, a tamper-evident audit log, tool schemas with generated profiles, framework adapters, a live demo, and a Redis-backed multi-worker mode with metrics) are implemented. What remains:
 \begin{itemize}
-  \item Run the Meta judge and the live agent against the real API and report the results. This has never been done.
+  \item Repeat the live runs with harder pages (\code{--hard --runs N}) and report attack success rates with and without the firewall.
   \item Measure on external injection datasets, with a held-out set the detector was not written against.
   \item Link model output to its sources semantically, so a paraphrase with no copied span stays tainted.
   \item Detect injections in more languages, and reduce false positives on pages that ask humans to send things to an address.
@@ -1010,7 +1039,7 @@ agentguard-fw/
   deploy/k8s/        Kubernetes manifests
   Dockerfile, docker-compose.yml, requirements-server.txt
   LICENSE, SECURITY.md, CONTRIBUTING.md
-  tests/             176 tests
+  tests/             177 tests
   CHANGELOG.md       release notes
   docs/
     main.tex         this document

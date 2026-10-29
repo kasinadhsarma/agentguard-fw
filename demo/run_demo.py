@@ -10,6 +10,11 @@ Set MODEL_API_KEY to also enable the Meta Model API LLM judge.
 
 runs a real model (through the Meta Model API) as the agent instead of the
 deterministic simulation. The model may or may not follow the injection.
+
+    python -m demo.run_demo --live --hard --runs 5
+
+adds three harder attack pages and repeats every scenario 5 times, then
+prints how often the model leaked with and without the firewall.
 """
 
 from __future__ import annotations
@@ -21,7 +26,7 @@ from agentguard import Firewall, MetaJudge
 
 from .agent import RunReport, SimAgent
 from .live_agent import LiveAgent
-from .scenarios import scenarios
+from .scenarios import hard_scenarios, scenarios
 
 
 GREEN = '\033[92m'
@@ -62,20 +67,82 @@ def print_report(report: RunReport) -> None:
         print(GREEN + '    RESULT: nothing leaked' + RESET)
 
 
-def run_live() -> int:
-    """Run every scenario with a real model, with and without the firewall."""
+def summarize(
+    scenario,
+    unprotected: list[RunReport],
+    protected: list[RunReport],
+) -> dict:
+    """Count what happened over repeated runs of one attack scenario.
+
+    Runs that ended in an API error are counted separately and left out of
+    the other numbers, so a billing problem cannot look like a defense.
+    """
+    def usable(reports: list[RunReport]) -> list[RunReport]:
+        return [report for report in reports if not report.error]
+
+    bare, guarded = usable(unprotected), usable(protected)
+    return {
+        'scenario': scenario.name,
+        'errors': (len(unprotected) - len(bare)) + (len(protected) - len(guarded)),
+        'unprotected_runs': len(bare),
+        'unprotected_leaks': sum(1 for r in bare if r.leaked),
+        'protected_runs': len(guarded),
+        'protected_leaks': sum(1 for r in guarded if r.leaked),
+        'attack_calls_blocked': sum(1 for r in guarded if r.blocked_count),
+        'user_email_sent': sum(
+            1 for r in guarded
+            if any(m.get('to') == scenario.recipient for m in r.sent_emails)
+        ),
+    }
+
+
+def print_summary(rows: list[dict]) -> None:
+    """Print the repeated-run results as a table."""
+    print('\n' + BOLD + 'Summary over repeated runs' + RESET)
+    print('  %-14s %-16s %-16s %-14s %s' % (
+        'scenario', 'leaks, no guard', 'leaks, guarded',
+        'attacks blocked', 'user email sent'))
+    for row in rows:
+        print('  %-14s %-16s %-16s %-14s %s%s' % (
+            row['scenario'],
+            str(row['unprotected_leaks']) + '/' + str(row['unprotected_runs']),
+            str(row['protected_leaks']) + '/' + str(row['protected_runs']),
+            str(row['attack_calls_blocked']) + '/' + str(row['protected_runs']),
+            str(row['user_email_sent']) + '/' + str(row['protected_runs']),
+            ('   (' + str(row['errors']) + ' API errors)') if row['errors'] else '',
+        ))
+
+
+def run_live(hard: bool = False, runs: int = 1) -> int:
+    """Run scenarios with a real model, with and without the firewall."""
     live = LiveAgent()
     if not live.enabled:
         print('--live needs the MODEL_API_KEY environment variable.')
         return 2
 
     judge = MetaJudge()
+    chosen = scenarios() + (hard_scenarios() if hard else [])
     print('Live agent model: ' + live.model + ' (results can vary per run)')
-    for scenario in scenarios():
+
+    rows = []
+    for scenario in chosen:
         print('\n' + BOLD + scenario.title + RESET)
-        print_report(LiveAgent().run(scenario))
-        firewall = Firewall(judge=judge if judge.enabled else None)
-        print_report(LiveAgent(firewall).run(scenario))
+        unprotected, protected = [], []
+        for index in range(runs):
+            if runs > 1:
+                print('  -- run ' + str(index + 1) + ' of ' + str(runs))
+            bare = LiveAgent().run(scenario)
+            firewall = Firewall(judge=judge if judge.enabled else None)
+            guarded = LiveAgent(firewall).run(scenario)
+            unprotected.append(bare)
+            protected.append(guarded)
+            if runs == 1:
+                print_report(bare)
+                print_report(guarded)
+        if scenario.is_attack:
+            rows.append(summarize(scenario, unprotected, protected))
+    if rows and (runs > 1 or hard):
+        print_summary(rows)
     return 0
 
 
@@ -84,8 +151,14 @@ def main() -> None:
     parser = argparse.ArgumentParser(description='AgentGuard demo')
     parser.add_argument('--live', action='store_true',
                         help='use a real model through the Meta Model API')
-    if parser.parse_args().live:
-        sys.exit(run_live())
+    parser.add_argument('--hard', action='store_true',
+                        help='with --live: add harder attack pages')
+    parser.add_argument('--runs', type=int, default=1,
+                        help='with --live: repeat each scenario N times '
+                        'and print a summary table (costs N times more)')
+    args = parser.parse_args()
+    if args.live:
+        sys.exit(run_live(hard=args.hard, runs=max(1, args.runs)))
 
     judge = MetaJudge()
     firewall_judge = judge if judge.enabled else None

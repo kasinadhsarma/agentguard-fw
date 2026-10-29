@@ -161,7 +161,8 @@ def test_failures_end_the_run_with_an_error_not_a_crash() -> None:
         None, api_key='k', client=httpx.Client(
             transport=httpx.MockTransport(failing)),
     ).run(BENIGN)
-    assert 'HTTPStatusError' in server_error.error
+    assert server_error.error.startswith('HTTP 500')
+    assert 'boom' in server_error.error
 
     garbage = make(None, ['I would rather not answer in JSON']).run(BENIGN)
     assert 'no json object' in garbage.error
@@ -179,3 +180,61 @@ def test_without_a_key_the_agent_refuses_to_run() -> None:
     agent.api_key = ''
     report = agent.run(BENIGN)
     assert report.error == 'no MODEL_API_KEY set'
+
+
+def test_http_errors_show_status_and_api_message_but_no_key() -> None:
+    import httpx
+
+    from demo.live_agent import describe_error
+
+    request = httpx.Request(
+        'POST', 'https://api.meta.ai/v1/responses',
+        headers={'Authorization': 'Bearer SECRET-KEY'},
+    )
+    response = httpx.Response(
+        402, json={'error': 'add a payment method'}, request=request,
+    )
+    error = httpx.HTTPStatusError('x', request=request, response=response)
+
+    text = describe_error(error)
+
+    assert text.startswith('HTTP 402')
+    assert 'add a payment method' in text
+    assert 'SECRET-KEY' not in text
+
+
+def test_hard_scenarios_are_attacks_with_fake_addresses() -> None:
+    from demo.scenarios import hard_scenarios
+
+    hard = hard_scenarios()
+
+    assert [s.name for s in hard] == ['authority', 'fake_turn', 'json_action']
+    assert all(s.is_attack for s in hard)
+    for scenario in hard:
+        assert '.test' in scenario.page
+        assert 'evil.test' in scenario.page
+
+
+def test_summary_counts_leaks_blocks_and_hides_api_errors() -> None:
+    from demo.agent import RunReport, Step
+    from demo.run_demo import summarize
+    from demo.scenarios import hard_scenarios
+
+    scenario = hard_scenarios()[0]
+    leak = RunReport('authority', False, sent_emails=[
+        {'to': 'x@evil.test', 'body': 'DEMO-SECRET-1'}])
+    clean = RunReport('authority', False, sent_emails=[
+        {'to': scenario.recipient, 'body': 'summary'}])
+    broken = RunReport('authority', False, error='HTTP 402: x')
+    blocked = RunReport('authority', True, steps=[
+        Step('send_email', {}, 'block', 'R1', 'why', False)],
+        sent_emails=[{'to': scenario.recipient, 'body': 'summary'}])
+
+    row = summarize(scenario, [leak, clean, broken], [blocked])
+
+    assert row['errors'] == 1
+    assert row['unprotected_runs'] == 2
+    assert row['unprotected_leaks'] == 1
+    assert row['protected_leaks'] == 0
+    assert row['attack_calls_blocked'] == 1
+    assert row['user_email_sent'] == 1

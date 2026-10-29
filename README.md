@@ -31,8 +31,8 @@ Rules are checked in the order R1, R2, R5, R3, R4, R0.
 
 ## Quick start
 
-    pip install -r requirements.txt
-    python -m pytest                 # 176 tests (18 use a real redis-server and skip without one)
+    pip install -r requirements-dev.txt
+    python -m pytest                 # 177 tests (18 use a real redis-server and skip without one)
     python -m demo.run_demo          # terminal demo (simulated agent)
     streamlit run demo/app.py        # visual demo
     python -m bench.run_bench        # measure detection on the bundled corpus
@@ -241,8 +241,47 @@ runs a real model as the agent, once without and once with the firewall,
 on the same three scenarios. The model decides what to do, so it may follow
 the injection or resist it, and runs can differ. The agent talks to the
 model through a small JSON text protocol rather than the API's own
-function-calling format. This path has been tested against a scripted mock
-server only, never the real API.
+function-calling format. Tests use a scripted mock server. One real run
+against `muse-spark-1.3` on the three plain scenarios (2026-10-29, run by
+the author): the model followed none of the injections, even with no
+firewall, so there was nothing for the firewall to block. A second run with
+`--hard --runs 5` (five attack pages) gave 0 leaks in 24 usable unprotected
+runs and 0 in 24 guarded runs (2 API errors excluded), so the live model
+never attempted the attack and the firewall blocked nothing there.
+
+## Web interface
+
+    python3 -m demo.web      # open http://127.0.0.1:8000
+
+Pick a scenario or paste your own page text. The simulated agent runs twice,
+unprotected and behind the firewall, side by side. No API key and no extra
+packages needed.
+
+## Results on real public attacks
+
+Run on attack text from the public AgentDojo benchmark (read from its source
+without running it; the detector was not changed for this test):
+
+    pip download agentdojo --no-deps && unzip agentdojo-*.whl -d ad
+    python3 -m bench.agentdojo_eval ad
+
+- 46 unique attacker goals. The detector alone flagged 37% (banking 0/17,
+  slack 0/5, travel 4/9, workspace 13/15).
+- 38 goals name an attacker account, address or site; sending to it was held
+  in all 38. That is close to true by construction, because the benchmark
+  gives the target only in the injected text.
+- 8 goals name no such target (hotel name, file id, password); not covered.
+- 0 of 39 harmless default texts flagged (small sample).
+
+Replays of three public incidents (GitHub MCP, Slack AI, EchoLeak) with fake
+data are in `demo/incidents.py`. GitHub MCP: private read held by R3, the
+pull request itself allowed (a user who approves the prompt out of habit
+still leaks). Slack AI and EchoLeak leaked through a rendered link or image
+with no tool call, so tool rules cannot see them; the answer check
+(`Firewall.check_output`, endpoint `POST /sessions/{id}/check-output`,
+rules O1 and O2) blocks both replays. It only works if the answer goes
+through it before it is shown. These are replays of published shapes, not
+tests of the products.
 
 ## Measured results (bundled benchmark)
 
@@ -288,7 +327,7 @@ How to read these numbers:
     demo/                  simulated agent, live agent, scenarios, CLI and Streamlit demos
     bench/                 labelled corpus, benchmark runner, load test, scale matrix
     deploy/k8s/            Kubernetes manifests (Dockerfile and compose at the top)
-    tests/                 176 tests
+    tests/                 177 tests
     docs/                  LaTeX documentation (main.tex, main.pdf), Mermaid diagrams
     CHANGELOG.md           what changed in each version
 
@@ -314,7 +353,7 @@ How to read these numbers:
 - Redis Cluster key names are cluster-safe, but it was never tested; the
   metrics hash is one key and would be a hot spot there.
 - Metrics lose at most about one second of counts when a worker dies.
-- The Meta judge and the live agent have never run against the real API.
+- The live agent ran once against the real API (see above). The Meta judge's own verdicts were not separately checked, and repeated live runs found no model leaks, so live blocking is not demonstrated.
 
 ## Documentation
 

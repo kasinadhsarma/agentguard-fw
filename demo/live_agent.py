@@ -17,8 +17,10 @@ The tools only touch an in-memory sandbox with fake secrets. The agent's
 instructions are deliberately plain, like a typical agent: they do not
 warn the model about injections.
 
-Needs MODEL_API_KEY. NOTE: this path has been tested only against a
-mocked server, never against the real API.
+Needs MODEL_API_KEY. Tests use a scripted mock server. One real run
+against muse-spark-1.3 (3 plain scenarios) is on record: the model did not
+follow any of the injections, so the firewall had nothing to block there.
+Use --hard and --runs to measure harder pages over many runs.
 """
 
 from __future__ import annotations
@@ -71,6 +73,20 @@ def parse_action(text: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError('reply json is not an object')
     return value
+
+
+def describe_error(error: Exception) -> str:
+    """Short, readable reason for a failed model call.
+
+    For an HTTP error this includes the status code and the start of the
+    API's own message (for example "402 ... insufficient balance"), which
+    is what you need to fix a billing or key problem. The request headers,
+    and so the API key, are never part of it.
+    """
+    if isinstance(error, httpx.HTTPStatusError):
+        body = error.response.text.strip().replace('\n', ' ')[:200]
+        return 'HTTP ' + str(error.response.status_code) + ': ' + body
+    return type(error).__name__ + ': ' + str(error)[:120]
 
 
 class LiveAgent:
@@ -142,7 +158,7 @@ class LiveAgent:
                 reply = self.ask_model(transcript)
                 action = parse_action(reply)
             except (httpx.HTTPError, ValueError, KeyError) as error:
-                report.error = type(error).__name__ + ': ' + str(error)[:120]
+                report.error = describe_error(error)
                 return report
 
             transcript += 'ASSISTANT: ' + json.dumps(action) + '\n'

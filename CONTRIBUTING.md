@@ -7,7 +7,7 @@ Contributions are welcome: bug reports, new attack samples, tests and fixes.
     git clone https://github.com/kasinadhsarma/agentguard-fw.git
     cd agentguard-fw
     python -m venv .venv && source .venv/bin/activate
-    pip install -r requirements.txt
+    pip install -r requirements-dev.txt
     python -m pytest
 
 All tests must pass before you open a pull request. The live Meta API paths

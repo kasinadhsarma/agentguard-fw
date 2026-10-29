@@ -61,7 +61,7 @@ context), R0 allow.
 
 ## Headline result
 
-On 46 real attacker goals from the public AgentDojo benchmark, AgentGuard held the attacker's action in 40 (87%): 38 name an attacker address, site or account, and 2 more are caught by a rule built after seeing them. 6 are not caught. "Held" includes calls that ask the user to confirm. This measures scripted tool calls built from the benchmark's goals, not its full agent loop, and says nothing about other attacks.
+On 46 real attacker goals from the public AgentDojo benchmark, AgentGuard held the attacker's action in 41 (89%): 38 name an attacker address, site or account, and 3 more are caught by a rule built after seeing them. 5 are not caught. "Held" includes calls that ask the user to confirm. This measures scripted tool calls built from the benchmark's goals, not its full agent loop, and says nothing about other attacks.
 
 ## Live results with the Meta Model API
 

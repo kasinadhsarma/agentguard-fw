@@ -323,6 +323,14 @@ R6_MAX_LENGTH = 80
 R6_MIN_LENGTH = 4
 
 
+def _is_id_name(name: str) -> bool:
+    """True for argument names like id, file_id, fileId, order-id."""
+    lowered = name.lower().replace('-', '_')
+    return lowered == 'id' or lowered.endswith('_id') or (
+        name.endswith('Id') and len(name) > 2
+    )
+
+
 def untrusted_only_value(
     arguments: dict,
     profile: ToolProfile,
@@ -332,7 +340,9 @@ def untrusted_only_value(
 
     Target arguments are handled by R1 and R3, and free-text arguments are
     skipped. Values shorter than a few characters are skipped because they
-    match by chance (the id "13" appears in any page).
+    match by chance (the number "13" appears in any page), except in
+    arguments whose name says they are an id, where a short value is the
+    whole point (delete_file(file_id="13")).
     """
     for name, raw in arguments.items():
         if name in profile.target_args or name.lower() in FREE_TEXT_ARGS:
@@ -340,7 +350,8 @@ def untrusted_only_value(
         if not isinstance(raw, str):
             continue
         value = raw.strip()
-        if not R6_MIN_LENGTH <= len(value) <= R6_MAX_LENGTH:
+        shortest = 1 if _is_id_name(name) else R6_MIN_LENGTH
+        if not shortest <= len(value) <= R6_MAX_LENGTH:
             continue
         if tracker.is_user_authorized(value):
             continue

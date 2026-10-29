@@ -267,7 +267,7 @@ without running it; the detector was not changed for this test):
     pip download agentdojo --no-deps && unzip agentdojo-*.whl -d ad
     python3 -m bench.agentdojo_eval ad
 
-**Headline:** On 46 real attacker goals from the public AgentDojo benchmark, AgentGuard held the attacker's action in 40 (87%): 38 name an attacker address, site or account, and 2 more are caught by a rule built after seeing them. 6 are not caught. "Held" includes calls that ask the user to confirm. This measures scripted tool calls built from the benchmark's goals, not its full agent loop, and says nothing about other attacks.
+**Headline:** On 46 real attacker goals from the public AgentDojo benchmark, AgentGuard held the attacker's action in 41 (89%): 38 name an attacker address, site or account, and 3 more are caught by a rule built after seeing them. 5 are not caught. "Held" includes calls that ask the user to confirm. This measures scripted tool calls built from the benchmark's goals, not its full agent loop, and says nothing about other attacks.
 
 - 46 unique attacker goals. The detector alone flagged 37% (banking 0/17,
   slack 0/5, travel 4/9, workspace 13/15).
@@ -276,8 +276,8 @@ without running it; the detector was not changed for this test):
   gives the target only in the injected text.
 - 8 goals name no such target. Rule R6 (a side-effect call whose short
   identifier argument only untrusted content named, e.g. a hotel name or a
-  password) holds 2 of them. 1 is missed (file id "13" is too short to match
-  reliably), and 5 have no call to check (text-only answers, or no named
+  password) holds 3 of them (a short value is accepted in an argument named like
+  an id, so the file id "13" counts), and 5 have no call to check (text-only answers, or no named
   value). I built R6 after seeing these goals, so this number is not a clean
   held-out result; the bundled benchmark was unchanged by it (44 blocked, 2
   held, 0 allowed; 48/52 legitimate emails allowed).
